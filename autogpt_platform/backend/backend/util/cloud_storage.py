@@ -9,9 +9,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
+import aiohttp
 from gcloud.aio import storage as async_gcs_storage
 from google.cloud import storage as gcs_storage
 
+from backend.util.gcs_utils import download_with_fresh_session, generate_signed_url
 from backend.util.settings import Config
 
 logger = logging.getLogger(__name__)
@@ -38,19 +40,57 @@ class CloudStorageHandler:
         self.config = config
         self._async_gcs_client = None
         self._sync_gcs_client = None  # Only for signed URLs
+        self._session = None
 
-    def _get_async_gcs_client(self):
-        """Lazy initialization of async GCS client."""
-        if self._async_gcs_client is None:
-            # Use Application Default Credentials (ADC)
-            self._async_gcs_client = async_gcs_storage.Storage()
+    async def _get_async_gcs_client(self):
+        """Get or create async GCS client, ensuring it's created in proper async context."""
+        # Check if we already have a client
+        if self._async_gcs_client is not None:
+            return self._async_gcs_client
+
+        current_task = asyncio.current_task()
+        if not current_task:
+            # If we're not in a task, create a temporary client
+            logger.warning(
+                "[CloudStorage] Creating GCS client outside of task context - using temporary client"
+            )
+            timeout = aiohttp.ClientTimeout(total=300)
+            session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(limit=100, force_close=False),
+            )
+            return async_gcs_storage.Storage(session=session)
+
+        # Create a reusable session with proper configuration
+        # Key fix: Don't set timeout on session, let gcloud-aio handle it
+        self._session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(
+                limit=100,  # Connection pool limit
+                force_close=False,  # Reuse connections
+            )
+        )
+
+        # Create the GCS client with our session
+        # The key is NOT setting timeout on the session but letting the library handle it
+        self._async_gcs_client = async_gcs_storage.Storage(session=self._session)
+
         return self._async_gcs_client
 
     async def close(self):
         """Close all client connections properly."""
         if self._async_gcs_client is not None:
-            await self._async_gcs_client.close()
+            try:
+                await self._async_gcs_client.close()
+            except Exception as e:
+                logger.warning(f"[CloudStorage] Error closing GCS client: {e}")
             self._async_gcs_client = None
+
+        if self._session is not None:
+            try:
+                await self._session.close()
+            except Exception as e:
+                logger.warning(f"[CloudStorage] Error closing session: {e}")
+            self._session = None
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -141,7 +181,7 @@ class CloudStorageHandler:
         if user_id and graph_exec_id:
             raise ValueError("Provide either user_id OR graph_exec_id, not both")
 
-        async_client = self._get_async_gcs_client()
+        async_client = await self._get_async_gcs_client()
 
         # Generate unique path with appropriate scope
         unique_id = str(uuid.uuid4())
@@ -203,7 +243,16 @@ class CloudStorageHandler:
         self, path: str, user_id: str | None = None, graph_exec_id: str | None = None
     ) -> bytes:
         """Retrieve file from Google Cloud Storage with authorization."""
-        # Parse bucket and blob name from path
+        # Log context for debugging
+        current_task = asyncio.current_task()
+        logger.info(
+            f"[CloudStorage]"
+            f"_retrieve_file_gcs called - "
+            f"current_task: {current_task}, "
+            f"in_task: {current_task is not None}"
+        )
+
+        # Parse bucket and blob name from path (path already has gcs:// prefix removed)
         parts = path.split("/", 1)
         if len(parts) != 2:
             raise ValueError(f"Invalid GCS path: {path}")
@@ -213,16 +262,33 @@ class CloudStorageHandler:
         # Authorization check
         self._validate_file_access(blob_name, user_id, graph_exec_id)
 
-        async_client = self._get_async_gcs_client()
+        logger.info(
+            f"[CloudStorage] About to download from GCS - bucket: {bucket_name}, blob: {blob_name}"
+        )
 
         try:
-            # Download content using pure async client
-            content = await async_client.download(bucket_name, blob_name)
+            content = await download_with_fresh_session(bucket_name, blob_name)
+            logger.info(
+                f"[CloudStorage] GCS download successful - size: {len(content)} bytes"
+            )
             return content
+        except FileNotFoundError:
+            raise
         except Exception as e:
-            # Convert gcloud-aio exceptions to standard ones
-            if "404" in str(e) or "Not Found" in str(e):
-                raise FileNotFoundError(f"File not found: gcs://{path}")
+            # Log the specific error for debugging
+            logger.error(
+                f"[CloudStorage] GCS download failed - error: {str(e)}, "
+                f"error_type: {type(e).__name__}, "
+                f"bucket: {bucket_name}, blob: redacted for privacy"
+            )
+
+            # Special handling for timeout error
+            if "Timeout context manager" in str(e):
+                logger.critical(
+                    f"[CloudStorage] TIMEOUT ERROR in GCS download! "
+                    f"current_task: {current_task}, "
+                    f"bucket: {bucket_name}, blob: redacted for privacy"
+                )
             raise
 
     def _validate_file_access(
@@ -303,7 +369,7 @@ class CloudStorageHandler:
 
         # Legacy uploads directory (uploads/*) - allow for backwards compatibility with warning
         # Note: We already validated it starts with "uploads/" above, so this is guaranteed to match
-        logger.warning(f"Accessing legacy upload path: {blob_name}")
+        logger.warning(f"[CloudStorage] Accessing legacy upload path: {blob_name}")
         return
 
     async def generate_signed_url(
@@ -345,8 +411,7 @@ class CloudStorageHandler:
         graph_exec_id: str | None = None,
     ) -> str:
         """Generate signed URL for GCS with authorization."""
-
-        # Parse bucket and blob name from path
+        # Parse bucket and blob name from path (path already has gcs:// prefix removed)
         parts = path.split("/", 1)
         if len(parts) != 2:
             raise ValueError(f"Invalid GCS path: {path}")
@@ -356,20 +421,10 @@ class CloudStorageHandler:
         # Authorization check
         self._validate_file_access(blob_name, user_id, graph_exec_id)
 
-        # Use sync client for signed URLs since gcloud-aio doesn't support them
         sync_client = self._get_sync_gcs_client()
-        bucket = sync_client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-
-        # Generate signed URL asynchronously using sync client
-        url = await asyncio.to_thread(
-            blob.generate_signed_url,
-            version="v4",
-            expiration=datetime.now(timezone.utc) + timedelta(hours=expiration_hours),
-            method="GET",
+        return await generate_signed_url(
+            sync_client, bucket_name, blob_name, expiration_hours * 3600
         )
-
-        return url
 
     async def delete_expired_files(self, provider: str = "gcs") -> int:
         """
@@ -391,7 +446,7 @@ class CloudStorageHandler:
         if not self.config.gcs_bucket_name:
             raise ValueError("GCS_BUCKET_NAME not configured")
 
-        async_client = self._get_async_gcs_client()
+        async_client = await self._get_async_gcs_client()
         current_time = datetime.now(timezone.utc)
 
         try:
@@ -431,7 +486,7 @@ class CloudStorageHandler:
                     except Exception as e:
                         # Log specific errors for debugging
                         logger.warning(
-                            f"Failed to process file {blob_name} during cleanup: {e}"
+                            f"[CloudStorage] Failed to process file {blob_name} during cleanup: {e}"
                         )
                         # Skip files with invalid metadata or delete errors
                         pass
@@ -447,7 +502,7 @@ class CloudStorageHandler:
 
         except Exception as e:
             # Log the error for debugging but continue operation
-            logger.error(f"Cleanup operation failed: {e}")
+            logger.error(f"[CloudStorage] Cleanup operation failed: {e}")
             # Return 0 - we'll try again next cleanup cycle
             return 0
 
@@ -476,7 +531,7 @@ class CloudStorageHandler:
 
         bucket_name, blob_name = parts
 
-        async_client = self._get_async_gcs_client()
+        async_client = await self._get_async_gcs_client()
 
         try:
             # Get object metadata using pure async client
@@ -490,11 +545,15 @@ class CloudStorageHandler:
         except Exception as e:
             # If file doesn't exist or we can't read metadata
             if "404" in str(e) or "Not Found" in str(e):
-                logger.debug(f"File not found during expiration check: {blob_name}")
+                logger.warning(
+                    f"[CloudStorage] File not found during expiration check: {blob_name}"
+                )
                 return True  # File doesn't exist, consider it expired
 
             # Log other types of errors for debugging
-            logger.warning(f"Failed to check expiration for {blob_name}: {e}")
+            logger.warning(
+                f"[CloudStorage] Failed to check expiration for {blob_name}: {e}"
+            )
             # If we can't read metadata for other reasons, assume not expired
             return False
 
@@ -544,11 +603,15 @@ async def cleanup_expired_files_async() -> int:
     # Use cleanup lock to prevent concurrent cleanup operations
     async with _cleanup_lock:
         try:
-            logger.info("Starting cleanup of expired cloud storage files")
+            logger.info(
+                "[CloudStorage] Starting cleanup of expired cloud storage files"
+            )
             handler = await get_cloud_storage_handler()
             deleted_count = await handler.delete_expired_files()
-            logger.info(f"Cleaned up {deleted_count} expired files from cloud storage")
+            logger.info(
+                f"[CloudStorage] Cleaned up {deleted_count} expired files from cloud storage"
+            )
             return deleted_count
         except Exception as e:
-            logger.error(f"Error during cloud storage cleanup: {e}")
+            logger.warning(f"[CloudStorage] Error during cloud storage cleanup: {e}")
             return 0

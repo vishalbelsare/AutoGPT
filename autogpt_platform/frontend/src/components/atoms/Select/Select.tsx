@@ -1,20 +1,27 @@
 "use client";
 
-import * as React from "react";
 import {
   Select as BaseSelect,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/__legacy__/ui/select";
 import { cn } from "@/lib/utils";
+import * as React from "react";
 import { ReactNode } from "react";
 import { Text } from "../Text/Text";
+import type { Variant } from "../Text/helpers";
+import { InformationTooltip } from "@/components/molecules/InformationTooltip/InformationTooltip";
 
 export interface SelectOption {
   value: string;
   label: string;
+  icon?: ReactNode;
+  disabled?: boolean;
+  separator?: boolean;
+  onSelect?: () => void; // optional action handler
 }
 
 export interface SelectFieldProps {
@@ -29,6 +36,12 @@ export interface SelectFieldProps {
   value?: string;
   onValueChange?: (value: string) => void;
   options: SelectOption[];
+  size?: "small" | "medium";
+  labelVariant?: Variant;
+  labelClassName?: string;
+  labelTooltip?: string;
+  renderItem?: (option: SelectOption) => React.ReactNode;
+  wrapperClassName?: string;
 }
 
 export function Select({
@@ -43,14 +56,28 @@ export function Select({
   value,
   onValueChange,
   options,
+  size = "medium",
+  labelVariant = "large-medium",
+  labelClassName,
+  labelTooltip,
+  renderItem,
+  wrapperClassName,
 }: SelectFieldProps) {
   const triggerStyles = cn(
-    // Override the default select styles with Figma design matching Input
-    "h-[2.875rem] rounded-3xl border border-zinc-200 bg-white px-4 py-2.5 shadow-none",
-    "font-normal text-black text-sm w-full",
-    "placeholder:font-normal !placeholder:text-zinc-400",
+    // Base styles matching Input
+    "rounded-xl border border-zinc-200 bg-white px-4 shadow-none",
+    "font-normal text-black w-full",
+    "placeholder:font-normal !placeholder:text-zinc-500",
     // Focus and hover states
     "focus:border-zinc-400 focus:shadow-none focus:outline-none focus:ring-1 focus:ring-zinc-400 focus:ring-offset-0",
+    // Size variants
+    size === "small" && [
+      "h-[2.25rem]",
+      "py-2",
+      "text-sm leading-[22px]",
+      "placeholder:text-sm placeholder:leading-[22px]",
+    ],
+    size === "medium" && ["h-[2.875rem]", "py-2.5", "text-sm"],
     // Error state
     error &&
       "border-1.5 border-red-500 focus:border-red-500 focus:ring-red-500",
@@ -69,17 +96,38 @@ export function Select({
         <SelectValue placeholder={placeholder || label} />
       </SelectTrigger>
       <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {option.label}
-          </SelectItem>
-        ))}
+        {options.map((option, idx) => {
+          if (option.separator) return <SelectSeparator key={`sep-${idx}`} />;
+          const content = renderItem ? (
+            renderItem(option)
+          ) : (
+            <div className="flex items-center gap-2">
+              {option.icon}
+              <span>{option.label}</span>
+            </div>
+          );
+          return (
+            <SelectItem
+              key={option.value}
+              value={option.value}
+              disabled={option.disabled}
+              onMouseDown={(e) => {
+                if (option.onSelect) {
+                  e.preventDefault();
+                  option.onSelect();
+                }
+              }}
+            >
+              {content}
+            </SelectItem>
+          );
+        })}
       </SelectContent>
     </BaseSelect>
   );
 
   const selectWithError = (
-    <div className="relative mb-6">
+    <div className={cn("relative mb-6", wrapperClassName)}>
       {select}
       <Text
         variant="small-medium"
@@ -99,10 +147,19 @@ export function Select({
     selectWithError
   ) : (
     <label htmlFor={id} className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <Text variant="body-medium" as="span" className="text-black">
-          {label}
-        </Text>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1">
+          <Text
+            variant={labelVariant}
+            as="span"
+            className={cn("text-black", labelClassName)}
+          >
+            {label}
+          </Text>
+          {labelTooltip ? (
+            <InformationTooltip description={labelTooltip} iconSize={20} />
+          ) : null}
+        </div>
         {hint}
       </div>
       {selectWithError}

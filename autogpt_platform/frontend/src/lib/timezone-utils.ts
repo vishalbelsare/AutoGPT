@@ -22,7 +22,6 @@ export function formatInTimezone(
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-    timeZoneName: "short",
     ...options,
   };
 
@@ -50,14 +49,14 @@ export function getTimezoneAbbreviation(timezone: string): string {
 
   try {
     const date = new Date();
-    const formatted = new Intl.DateTimeFormat("en-US", {
+    const tzAbbr = new Intl.DateTimeFormat("en-US", {
       timeZone: timezone,
       timeZoneName: "short",
-    }).format(date);
+    })
+      .formatToParts(date)
+      .find((part) => part.type === "timeZoneName")?.value;
 
-    // Extract the timezone abbreviation from the formatted string
-    const match = formatted.match(/[A-Z]{2,5}$/);
-    return match ? match[0] : timezone;
+    return tzAbbr || timezone;
   } catch {
     return timezone;
   }
@@ -71,14 +70,13 @@ export function getTimezoneAbbreviation(timezone: string): string {
  */
 export function formatScheduleTime(
   nextRunTime: string | Date,
-  displayTimezone: string,
+  displayTimezone: string = "UTC",
 ): string {
   const date =
     typeof nextRunTime === "string" ? new Date(nextRunTime) : nextRunTime;
 
   // Use provided timezone for display, fallback to UTC
-  const timezone = displayTimezone || "UTC";
-  const formatted = formatInTimezone(date, timezone, {
+  const formatted = formatInTimezone(date, displayTimezone, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -108,8 +106,33 @@ export function getTimezoneDisplayName(timezone: string): string {
     const parts = timezone.split("/");
     const city = parts[parts.length - 1].replace(/_/g, " ");
     const abbr = getTimezoneAbbreviation(timezone);
-    return abbr ? `${city} (${abbr})` : city;
+    if (abbr && abbr !== timezone) {
+      return `${city} (${abbr})`;
+    }
+    // If abbreviation is same as timezone or not found, show timezone with underscores replaced
+    const timezoneDisplay = timezone.replace(/_/g, " ");
+    return `${city} (${timezoneDisplay})`;
   } catch {
-    return timezone;
+    return timezone.replace(/_/g, " ");
+  }
+}
+
+/**
+ * Get the GMT offset for a given timezone, e.g. "GMT+9" or "UTC"
+ */
+export function getTimezoneGmtOffset(timezone: string): string {
+  if (timezone === "not-set" || !timezone) return "";
+  try {
+    const date = new Date();
+    const formatted = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      timeZoneName: "short",
+    }).format(date);
+
+    // Common outputs look like "1/1/2024, GMT+9" or "1/1/2024, UTC"
+    const match = formatted.match(/(GMT[+\-]\d{1,2}|UTC)/i);
+    return match ? match[0].toUpperCase() : "";
+  } catch {
+    return "";
   }
 }

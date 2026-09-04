@@ -1,56 +1,70 @@
 "use client";
+
+import { SettingsForm } from "@/app/(platform)/profile/(user)/settings/components/SettingsForm/SettingsForm";
+import { useTimezoneDetection } from "@/app/(platform)/profile/(user)/settings/useTimezoneDetection";
 import {
   useGetV1GetNotificationPreferences,
   useGetV1GetUserTimezone,
 } from "@/app/api/__generated__/endpoints/auth/auth";
-import { SettingsForm } from "@/app/(platform)/profile/(user)/settings/components/SettingsForm/SettingsForm";
-import { useSupabase } from "@/lib/supabase/hooks/useSupabase";
-import { useTimezoneDetection } from "@/hooks/useTimezoneDetection";
-import * as React from "react";
-import SettingsLoading from "./loading";
-import { redirect } from "next/navigation";
+import { okData } from "@/app/api/helpers";
 import { Text } from "@/components/atoms/Text/Text";
+import { ErrorCard } from "@/components/molecules/ErrorCard/ErrorCard";
+import { useAuth } from "@/lib/auth/hooks/useAuth";
+import { useEffect } from "react";
+import SettingsLoading from "./loading";
 
 export default function SettingsPage() {
+  const { user } = useAuth();
+
   const {
     data: preferences,
     isError: preferencesError,
     isLoading: preferencesLoading,
+    error: preferencesErrorData,
+    refetch: refetchPreferences,
   } = useGetV1GetNotificationPreferences({
     query: {
-      select: (res) => {
-        return res.data;
-      },
+      enabled: !!user,
+      select: okData,
     },
   });
 
-  const { data: timezoneData, isLoading: timezoneLoading } =
+  const { data: timezone, isLoading: timezoneLoading } =
     useGetV1GetUserTimezone({
       query: {
-        select: (res) => {
-          return res.data;
-        },
+        enabled: !!user,
+        select: (res) => okData(res)?.timezone ?? "not-set",
       },
     });
 
-  const { user, isUserLoading } = useSupabase();
+  useTimezoneDetection(!!user ? timezone : undefined);
 
-  // Auto-detect timezone if it's not set
-  const timezone = timezoneData?.timezone
-    ? String(timezoneData.timezone)
-    : "not-set";
-  useTimezoneDetection(timezone);
+  useEffect(() => {
+    document.title = "Settings – AutoGPT Platform";
+  }, []);
 
-  if (preferencesLoading || isUserLoading || timezoneLoading) {
+  if (preferencesError) {
+    return (
+      <div className="container max-w-2xl py-10">
+        <ErrorCard
+          responseError={
+            preferencesErrorData
+              ? {
+                  detail: preferencesErrorData.detail,
+                }
+              : undefined
+          }
+          context="settings"
+          onRetry={() => {
+            void refetchPreferences();
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (preferencesLoading || timezoneLoading || !user || !preferences) {
     return <SettingsLoading />;
-  }
-
-  if (!user) {
-    redirect("/login");
-  }
-
-  if (preferencesError || !preferences || !preferences.preferences) {
-    return "Errror..."; // TODO: Will use a Error reusable components from Block Menu redesign
   }
 
   return (

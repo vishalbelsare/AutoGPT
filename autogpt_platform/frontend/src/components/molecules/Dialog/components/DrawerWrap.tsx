@@ -1,10 +1,12 @@
-import { Button } from "@/components/ui/button";
-import { X } from "@phosphor-icons/react";
+import { Button } from "@/components/__legacy__/ui/button";
+import { scrollbarStyles } from "@/components/styles/scrollbars";
+import { cn } from "@/lib/utils";
 import { PropsWithChildren } from "react";
 import { Drawer } from "vaul";
 import { DialogCtx } from "../useDialogCtx";
 import { drawerStyles, modalStyles } from "./styles";
-import styles from "./styles.module.css";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Icon } from "@/components/atoms/Icon/Icon";
 
 type BaseProps = DialogCtx & PropsWithChildren;
 
@@ -21,6 +23,9 @@ export function DrawerWrap({
   handleClose,
   isForceOpen,
 }: Props) {
+  const accessibleTitle = title || "Dialog";
+  const hasVisibleTitle = Boolean(title);
+
   const closeBtn = (
     <Button
       variant="link"
@@ -28,7 +33,7 @@ export function DrawerWrap({
       onClick={handleClose}
       className="!focus-visible:ring-0 p-0"
     >
-      <X width="1.5rem" />
+      <Icon icon={Cancel01Icon} width="1.5rem" />
     </Button>
   );
 
@@ -42,16 +47,20 @@ export function DrawerWrap({
         onInteractOutside={handleClose}
       >
         <div
-          className={`flex w-full items-center justify-between ${
-            title ? "pb-6" : "pb-0"
+          className={`flex w-full shrink-0 items-center justify-between ${
+            hasVisibleTitle ? "pb-6" : "pb-0"
           }`}
         >
-          {title ? (
-            <Drawer.Title className={drawerStyles.title}>{title}</Drawer.Title>
-          ) : null}
+          {hasVisibleTitle ? (
+            <Drawer.Title className={drawerStyles.title}>
+              {accessibleTitle}
+            </Drawer.Title>
+          ) : (
+            <Drawer.Title className="sr-only">{accessibleTitle}</Drawer.Title>
+          )}
 
           {!isForceOpen ? (
-            title ? (
+            hasVisibleTitle ? (
               closeBtn
             ) : (
               <div
@@ -62,8 +71,15 @@ export function DrawerWrap({
             )
           ) : null}
         </div>
-        <div className={`overflow-auto ${styles.scrollableContent}`}>
-          {children}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div
+            className={cn(
+              "flex-1 overflow-y-auto overflow-x-hidden",
+              scrollbarStyles,
+            )}
+          >
+            {children}
+          </div>
         </div>
       </Drawer.Content>
     </Drawer.Portal>

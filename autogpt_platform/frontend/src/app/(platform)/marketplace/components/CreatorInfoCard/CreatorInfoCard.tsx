@@ -1,10 +1,13 @@
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { StarRatingIcons } from "@/components/ui/icons";
+import Avatar, {
+  AvatarFallback,
+  AvatarImage,
+} from "@/components/atoms/Avatar/Avatar";
+import { StarRatingIcons } from "@/components/__legacy__/ui/icons";
 
 interface CreatorInfoCardProps {
   username: string;
   handle: string;
-  avatarSrc: string;
+  avatarSrc: string | null;
   categories: string[];
   averageRating: number;
   totalRuns: number;
@@ -26,17 +29,19 @@ export const CreatorInfoCard = ({
     >
       <div className="flex w-full flex-col items-start justify-start gap-3.5 sm:h-[218px]">
         <Avatar className="h-[100px] w-[100px] sm:h-[130px] sm:w-[130px]">
-          <AvatarImage
-            width={130}
-            height={130}
-            src={avatarSrc}
-            alt={`${username}'s avatar`}
-          />
+          {avatarSrc && (
+            <AvatarImage
+              width={130}
+              height={130}
+              src={avatarSrc}
+              alt={`${username}'s avatar`}
+            />
+          )}
           <AvatarFallback
             size={130}
             className="h-[100px] w-[100px] sm:h-[130px] sm:w-[130px]"
           >
-            {username.charAt(0)}
+            {username}
           </AvatarFallback>
         </Avatar>
         <div className="flex w-full flex-col items-start justify-start gap-1.5">

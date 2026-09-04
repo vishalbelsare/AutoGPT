@@ -1,12 +1,19 @@
 import logging
+from typing import Literal
 from urllib.parse import urlparse
 
 from typing_extensions import TypedDict
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.blocks._base import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import SchemaField
 
-from ._api import convert_comment_url_to_api_endpoint, get_api
+from ._api import convert_comment_url_to_api_endpoint, get_api, get_paginated
 from ._auth import (
     TEST_CREDENTIALS,
     TEST_CREDENTIALS_INPUT,
@@ -24,7 +31,7 @@ def is_github_url(url: str) -> bool:
 
 # --8<-- [start:GithubCommentBlockExample]
 class GithubCommentBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         issue_url: str = SchemaField(
             description="URL of the GitHub issue or pull request",
@@ -35,7 +42,7 @@ class GithubCommentBlock(Block):
             placeholder="Enter your comment",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         id: int = SchemaField(description="ID of the created comment")
         url: str = SchemaField(description="URL to the comment on GitHub")
         error: str = SchemaField(
@@ -45,7 +52,7 @@ class GithubCommentBlock(Block):
     def __init__(self):
         super().__init__(
             id="a8db4d8d-db1c-4a25-a1b0-416a8c33602b",
-            description="This block posts a comment on a specified GitHub issue or pull request.",
+            description="A block that posts comments on GitHub issues or pull requests using the GitHub API.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubCommentBlock.Input,
             output_schema=GithubCommentBlock.Output,
@@ -112,7 +119,7 @@ class GithubCommentBlock(Block):
 
 
 class GithubUpdateCommentBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         comment_url: str = SchemaField(
             description="URL of the GitHub comment",
@@ -135,7 +142,7 @@ class GithubUpdateCommentBlock(Block):
             placeholder="Enter your comment",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         id: int = SchemaField(description="ID of the updated comment")
         url: str = SchemaField(description="URL to the comment on GitHub")
         error: str = SchemaField(
@@ -145,7 +152,7 @@ class GithubUpdateCommentBlock(Block):
     def __init__(self):
         super().__init__(
             id="b3f4d747-10e3-4e69-8c51-f2be1d99c9a7",
-            description="This block updates a comment on a specified GitHub issue or pull request.",
+            description="A block that updates an existing comment on a GitHub issue or pull request.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubUpdateCommentBlock.Input,
             output_schema=GithubUpdateCommentBlock.Output,
@@ -219,14 +226,27 @@ class GithubUpdateCommentBlock(Block):
 
 
 class GithubListCommentsBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         issue_url: str = SchemaField(
             description="URL of the GitHub issue or pull request",
             placeholder="https://github.com/owner/repo/issues/1",
         )
+        limit: int = SchemaField(
+            description="Maximum number of comments to fetch",
+            default=100,
+            ge=1,
+            le=1000,
+        )
+        since: str = SchemaField(
+            description="Only include comments updated after the given "
+            "ISO 8601 timestamp",
+            placeholder="2026-01-01T00:00:00Z",
+            default="",
+            advanced=True,
+        )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class CommentItem(TypedDict):
             id: int
             body: str
@@ -239,12 +259,11 @@ class GithubListCommentsBlock(Block):
         comments: list[CommentItem] = SchemaField(
             description="List of comments with their ID, body, user, and URL"
         )
-        error: str = SchemaField(description="Error message if listing comments failed")
 
     def __init__(self):
         super().__init__(
             id="c4b5fb63-0005-4a11-b35a-0c2467bd6b59",
-            description="This block lists all comments for a specified GitHub issue or pull request.",
+            description="A block that retrieves all comments from a GitHub issue or pull request, including comment metadata and content.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubListCommentsBlock.Input,
             output_schema=GithubListCommentsBlock.Output,
@@ -289,7 +308,7 @@ class GithubListCommentsBlock(Block):
 
     @staticmethod
     async def list_comments(
-        credentials: GithubCredentials, issue_url: str
+        credentials: GithubCredentials, issue_url: str, limit: int, since: str
     ) -> list[Output.CommentItem]:
         parsed_url = urlparse(issue_url)
         path_parts = parsed_url.path.strip("/").split("/")
@@ -305,8 +324,12 @@ class GithubListCommentsBlock(Block):
 
         # Set convert_urls=False since we're already providing an API URL
         api = get_api(credentials, convert_urls=False)
-        response = await api.get(api_url)
-        comments = response.json()
+        comments = await get_paginated(
+            api,
+            api_url,
+            limit=limit,
+            params={"since": since} if since else None,
+        )
         parsed_comments: list[GithubListCommentsBlock.Output.CommentItem] = [
             {
                 "id": comment["id"],
@@ -328,6 +351,8 @@ class GithubListCommentsBlock(Block):
         comments = await self.list_comments(
             credentials,
             input_data.issue_url,
+            input_data.limit,
+            input_data.since,
         )
         for comment in comments:
             yield "comment", comment
@@ -335,7 +360,7 @@ class GithubListCommentsBlock(Block):
 
 
 class GithubMakeIssueBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -348,7 +373,7 @@ class GithubMakeIssueBlock(Block):
             description="Body of the issue", placeholder="Enter the issue body"
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         number: int = SchemaField(description="Number of the created issue")
         url: str = SchemaField(description="URL of the created issue")
         error: str = SchemaField(
@@ -358,7 +383,7 @@ class GithubMakeIssueBlock(Block):
     def __init__(self):
         super().__init__(
             id="691dad47-f494-44c3-a1e8-05b7990f2dab",
-            description="This block creates a new issue on a specified GitHub repository.",
+            description="A block that creates new issues on GitHub repositories with a title and body content.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubMakeIssueBlock.Input,
             output_schema=GithubMakeIssueBlock.Output,
@@ -410,14 +435,14 @@ class GithubMakeIssueBlock(Block):
 
 
 class GithubReadIssueBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         issue_url: str = SchemaField(
             description="URL of the GitHub issue",
             placeholder="https://github.com/owner/repo/issues/1",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         title: str = SchemaField(description="Title of the issue")
         body: str = SchemaField(description="Body of the issue")
         user: str = SchemaField(description="User who created the issue")
@@ -428,7 +453,7 @@ class GithubReadIssueBlock(Block):
     def __init__(self):
         super().__init__(
             id="6443c75d-032a-4772-9c08-230c707c8acc",
-            description="This block reads the body, title, and user of a specified GitHub issue.",
+            description="A block that retrieves information about a specific GitHub issue, including its title, body content, and creator.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubReadIssueBlock.Input,
             output_schema=GithubReadIssueBlock.Output,
@@ -483,14 +508,73 @@ class GithubReadIssueBlock(Block):
 
 
 class GithubListIssuesBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
             placeholder="https://github.com/owner/repo",
         )
+        state: Literal["open", "closed", "all"] = SchemaField(
+            description="Only include issues in this state",
+            default="open",
+        )
+        include_pull_requests: bool = SchemaField(
+            description="Whether to also include pull requests in the results. "
+            "The GitHub API considers every pull request an issue.",
+            default=False,
+        )
+        labels: list[str] = SchemaField(
+            description="Only include issues that have all of these labels",
+            default_factory=list,
+        )
+        limit: int = SchemaField(
+            description="Maximum number of issues to fetch",
+            default=100,
+            ge=1,
+            le=1000,
+        )
+        assignee: str = SchemaField(
+            description="Only include issues assigned to this user. "
+            "Use 'none' for unassigned issues, or '*' for issues with any assignee.",
+            default="",
+            advanced=True,
+        )
+        creator: str = SchemaField(
+            description="Only include issues created by this user",
+            default="",
+            advanced=True,
+        )
+        mentioned: str = SchemaField(
+            description="Only include issues in which this user is mentioned",
+            default="",
+            advanced=True,
+        )
+        milestone: str = SchemaField(
+            description="Only include issues in this milestone, by milestone number. "
+            "Use 'none' for issues without a milestone, "
+            "or '*' for issues with any milestone.",
+            default="",
+            advanced=True,
+        )
+        sort: Literal["created", "updated", "comments"] = SchemaField(
+            description="What to sort the issues by",
+            default="created",
+            advanced=True,
+        )
+        direction: Literal["asc", "desc"] = SchemaField(
+            description="Sort direction",
+            default="desc",
+            advanced=True,
+        )
+        since: str = SchemaField(
+            description="Only include issues updated after the given "
+            "ISO 8601 timestamp",
+            placeholder="2026-01-01T00:00:00Z",
+            default="",
+            advanced=True,
+        )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class IssueItem(TypedDict):
             title: str
             url: str
@@ -501,12 +585,11 @@ class GithubListIssuesBlock(Block):
         issues: list[IssueItem] = SchemaField(
             description="List of issues with their title and URL"
         )
-        error: str = SchemaField(description="Error message if listing issues failed")
 
     def __init__(self):
         super().__init__(
             id="c215bfd7-0e57-4573-8f8c-f7d4963dcd74",
-            description="This block lists all issues for a specified GitHub repository.",
+            description="A block that retrieves a list of issues from a GitHub repository with their titles and URLs.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubListIssuesBlock.Input,
             output_schema=GithubListIssuesBlock.Output,
@@ -545,12 +628,40 @@ class GithubListIssuesBlock(Block):
 
     @staticmethod
     async def list_issues(
-        credentials: GithubCredentials, repo_url: str
+        credentials: GithubCredentials, input_data: Input
     ) -> list[Output.IssueItem]:
         api = get_api(credentials)
-        issues_url = repo_url + "/issues"
-        response = await api.get(issues_url)
-        data = response.json()
+        params = {
+            "state": input_data.state,
+            "sort": input_data.sort,
+            "direction": input_data.direction,
+        }
+        if input_data.labels:
+            params["labels"] = ",".join(input_data.labels)
+        if input_data.assignee:
+            params["assignee"] = input_data.assignee
+        if input_data.creator:
+            params["creator"] = input_data.creator
+        if input_data.mentioned:
+            params["mentioned"] = input_data.mentioned
+        if input_data.milestone:
+            params["milestone"] = input_data.milestone
+        if input_data.since:
+            params["since"] = input_data.since
+
+        data = await get_paginated(
+            api,
+            input_data.repo_url + "/issues",
+            limit=input_data.limit,
+            params=params,
+            # The issues endpoint also returns pull requests, marked by the
+            # presence of a "pull_request" key
+            keep=(
+                None
+                if input_data.include_pull_requests
+                else (lambda issue: "pull_request" not in issue)
+            ),
+        )
         issues: list[GithubListIssuesBlock.Output.IssueItem] = [
             {"title": issue["title"], "url": issue["html_url"]} for issue in data
         ]
@@ -563,17 +674,14 @@ class GithubListIssuesBlock(Block):
         credentials: GithubCredentials,
         **kwargs,
     ) -> BlockOutput:
-        issues = await self.list_issues(
-            credentials,
-            input_data.repo_url,
-        )
+        issues = await self.list_issues(credentials, input_data)
         yield "issues", issues
         for issue in issues:
             yield "issue", issue
 
 
 class GithubAddLabelBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         issue_url: str = SchemaField(
             description="URL of the GitHub issue or pull request",
@@ -584,7 +692,7 @@ class GithubAddLabelBlock(Block):
             placeholder="Enter the label",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         status: str = SchemaField(description="Status of the label addition operation")
         error: str = SchemaField(
             description="Error message if the label addition failed"
@@ -593,7 +701,7 @@ class GithubAddLabelBlock(Block):
     def __init__(self):
         super().__init__(
             id="98bd6b77-9506-43d5-b669-6b9733c4b1f1",
-            description="This block adds a label to a specified GitHub issue or pull request.",
+            description="A block that adds a label to a GitHub issue or pull request for categorization and organization.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubAddLabelBlock.Input,
             output_schema=GithubAddLabelBlock.Output,
@@ -633,7 +741,7 @@ class GithubAddLabelBlock(Block):
 
 
 class GithubRemoveLabelBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         issue_url: str = SchemaField(
             description="URL of the GitHub issue or pull request",
@@ -644,7 +752,7 @@ class GithubRemoveLabelBlock(Block):
             placeholder="Enter the label",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         status: str = SchemaField(description="Status of the label removal operation")
         error: str = SchemaField(
             description="Error message if the label removal failed"
@@ -653,7 +761,7 @@ class GithubRemoveLabelBlock(Block):
     def __init__(self):
         super().__init__(
             id="78f050c5-3e3a-48c0-9e5b-ef1ceca5589c",
-            description="This block removes a label from a specified GitHub issue or pull request.",
+            description="A block that removes a label from a GitHub issue or pull request.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubRemoveLabelBlock.Input,
             output_schema=GithubRemoveLabelBlock.Output,
@@ -694,7 +802,7 @@ class GithubRemoveLabelBlock(Block):
 
 
 class GithubAssignIssueBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         issue_url: str = SchemaField(
             description="URL of the GitHub issue",
@@ -705,7 +813,7 @@ class GithubAssignIssueBlock(Block):
             placeholder="Enter the username",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         status: str = SchemaField(
             description="Status of the issue assignment operation"
         )
@@ -716,7 +824,7 @@ class GithubAssignIssueBlock(Block):
     def __init__(self):
         super().__init__(
             id="90507c72-b0ff-413a-886a-23bbbd66f542",
-            description="This block assigns a user to a specified GitHub issue.",
+            description="A block that assigns a GitHub user to an issue for task ownership and tracking.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubAssignIssueBlock.Input,
             output_schema=GithubAssignIssueBlock.Output,
@@ -760,7 +868,7 @@ class GithubAssignIssueBlock(Block):
 
 
 class GithubUnassignIssueBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         issue_url: str = SchemaField(
             description="URL of the GitHub issue",
@@ -771,7 +879,7 @@ class GithubUnassignIssueBlock(Block):
             placeholder="Enter the username",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         status: str = SchemaField(
             description="Status of the issue unassignment operation"
         )
@@ -782,7 +890,7 @@ class GithubUnassignIssueBlock(Block):
     def __init__(self):
         super().__init__(
             id="d154002a-38f4-46c2-962d-2488f2b05ece",
-            description="This block unassigns a user from a specified GitHub issue.",
+            description="A block that removes a user's assignment from a GitHub issue.",
             categories={BlockCategory.DEVELOPER_TOOLS},
             input_schema=GithubUnassignIssueBlock.Input,
             output_schema=GithubUnassignIssueBlock.Output,

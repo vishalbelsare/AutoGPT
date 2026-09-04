@@ -1,13 +1,19 @@
 import logging
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from typing_extensions import TypedDict
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.blocks._base import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import SchemaField
 
-from ._api import get_api
+from ._api import get_api, get_paginated
 from ._auth import (
     TEST_CREDENTIALS,
     TEST_CREDENTIALS_INPUT,
@@ -26,7 +32,7 @@ class ReviewEvent(Enum):
 
 
 class GithubCreatePRReviewBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         class ReviewComment(TypedDict, total=False):
             path: str
             position: Optional[int]
@@ -61,7 +67,7 @@ class GithubCreatePRReviewBlock(Block):
             advanced=True,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         review_id: int = SchemaField(description="ID of the created review")
         state: str = SchemaField(
             description="State of the review (e.g., PENDING, COMMENTED, APPROVED, CHANGES_REQUESTED)"
@@ -197,7 +203,7 @@ class GithubCreatePRReviewBlock(Block):
 
 
 class GithubListPRReviewsBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo: str = SchemaField(
             description="GitHub repository",
@@ -207,8 +213,32 @@ class GithubListPRReviewsBlock(Block):
             description="Pull request number",
             placeholder="123",
         )
+        reviewer: str = SchemaField(
+            description="Only include reviews by this user",
+            placeholder="octocat",
+            default="",
+        )
+        state: Literal[
+            "all", "approved", "changes_requested", "commented", "dismissed", "pending"
+        ] = SchemaField(
+            description="Only include reviews with this state. "
+            "Note: 'pending' reviews are your own unsubmitted draft reviews, "
+            "which are excluded by any other choice.",
+            default="all",
+        )
+        latest_only: bool = SchemaField(
+            description="Only include each reviewer's latest review, "
+            "reflecting their current stance",
+            default=False,
+        )
+        limit: int = SchemaField(
+            description="Maximum number of reviews to fetch",
+            default=100,
+            ge=1,
+            le=1000,
+        )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class ReviewItem(TypedDict):
             id: int
             user: str
@@ -223,7 +253,6 @@ class GithubListPRReviewsBlock(Block):
         reviews: list[ReviewItem] = SchemaField(
             description="List of all reviews on the pull request"
         )
-        error: str = SchemaField(description="Error message if listing reviews failed")
 
     def __init__(self):
         super().__init__(
@@ -277,15 +306,45 @@ class GithubListPRReviewsBlock(Block):
 
     @staticmethod
     async def list_reviews(
-        credentials: GithubCredentials, repo: str, pr_number: int
+        credentials: GithubCredentials, input_data: Input
     ) -> list[Output.ReviewItem]:
         api = get_api(credentials, convert_urls=False)
 
         # GitHub API endpoint for listing reviews
-        reviews_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+        reviews_url = (
+            f"https://api.github.com/repos/{input_data.repo}"
+            f"/pulls/{input_data.pr_number}/reviews"
+        )
 
-        response = await api.get(reviews_url)
-        data = response.json()
+        # State filtering and per-reviewer deduplication can only be done after
+        # fetching, so in those cases the limit is applied at the end instead.
+        fetch_limit = (
+            input_data.limit
+            if input_data.state == "all" and not input_data.latest_only
+            else 1000
+        )
+        data = await get_paginated(
+            api,
+            reviews_url,
+            limit=fetch_limit,
+            keep=(
+                (lambda review: review["user"]["login"] == input_data.reviewer)
+                if input_data.reviewer
+                else None
+            ),
+        )
+
+        if input_data.latest_only:
+            latest_by_user: dict[str, dict] = {}
+            for review in data:
+                # A PENDING review is an unsubmitted draft, not a stance
+                if review["state"] == "PENDING":
+                    continue
+                latest_by_user[review["user"]["login"]] = review
+            data = list(latest_by_user.values())
+
+        if input_data.state != "all":
+            data = [r for r in data if r["state"] == input_data.state.upper()]
 
         reviews: list[GithubListPRReviewsBlock.Output.ReviewItem] = [
             {
@@ -295,7 +354,7 @@ class GithubListPRReviewsBlock(Block):
                 "body": review.get("body", ""),
                 "html_url": review["html_url"],
             }
-            for review in data
+            for review in data[: input_data.limit]
         ]
         return reviews
 
@@ -306,18 +365,14 @@ class GithubListPRReviewsBlock(Block):
         credentials: GithubCredentials,
         **kwargs,
     ) -> BlockOutput:
-        reviews = await self.list_reviews(
-            credentials,
-            input_data.repo,
-            input_data.pr_number,
-        )
+        reviews = await self.list_reviews(credentials, input_data)
         yield "reviews", reviews
         for review in reviews:
             yield "review", review
 
 
 class GithubSubmitPendingReviewBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo: str = SchemaField(
             description="GitHub repository",
@@ -336,7 +391,7 @@ class GithubSubmitPendingReviewBlock(Block):
             default=ReviewEvent.COMMENT,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         state: str = SchemaField(description="State of the submitted review")
         html_url: str = SchemaField(description="URL of the submitted review")
         error: str = SchemaField(
@@ -415,7 +470,7 @@ class GithubSubmitPendingReviewBlock(Block):
 
 
 class GithubResolveReviewDiscussionBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo: str = SchemaField(
             description="GitHub repository",
@@ -434,9 +489,8 @@ class GithubResolveReviewDiscussionBlock(Block):
             default=True,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         success: bool = SchemaField(description="Whether the operation was successful")
-        error: str = SchemaField(description="Error message if the operation failed")
 
     def __init__(self):
         super().__init__(
@@ -579,7 +633,7 @@ class GithubResolveReviewDiscussionBlock(Block):
 
 
 class GithubGetPRReviewCommentsBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo: str = SchemaField(
             description="GitHub repository",
@@ -596,7 +650,7 @@ class GithubGetPRReviewCommentsBlock(Block):
             advanced=True,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class CommentItem(TypedDict):
             id: int
             user: str
@@ -616,7 +670,6 @@ class GithubGetPRReviewCommentsBlock(Block):
         comments: list[CommentItem] = SchemaField(
             description="List of all review comments on the pull request"
         )
-        error: str = SchemaField(description="Error message if getting comments failed")
 
     def __init__(self):
         super().__init__(
@@ -744,7 +797,7 @@ class GithubGetPRReviewCommentsBlock(Block):
 
 
 class GithubCreateCommentObjectBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         path: str = SchemaField(
             description="The file path to comment on",
             placeholder="src/main.py",
@@ -781,7 +834,7 @@ class GithubCreateCommentObjectBlock(Block):
             advanced=True,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         comment_object: dict = SchemaField(
             description="The comment object formatted for GitHub API"
         )

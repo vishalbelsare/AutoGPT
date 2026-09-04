@@ -2,11 +2,18 @@ from typing import Any, Literal
 
 from pydantic import SecretStr
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.blocks._base import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import (
     APIKeyCredentials,
     CredentialsField,
     CredentialsMetaInput,
+    NodeExecutionStats,
     SchemaField,
 )
 from backend.integrations.providers import ProviderName
@@ -28,7 +35,7 @@ TEST_CREDENTIALS_INPUT = {
 
 
 class UnrealTextToSpeechBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         text: str = SchemaField(
             description="The text to be converted to speech",
             placeholder="Enter the text you want to convert to speech",
@@ -45,9 +52,8 @@ class UnrealTextToSpeechBlock(Block):
             "any API key with sufficient permissions for the blocks it is used on.",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         mp3_url: str = SchemaField(description="The URL of the generated MP3 file")
-        error: str = SchemaField(description="Error message if the API call failed")
 
     def __init__(self):
         super().__init__(
@@ -98,5 +104,14 @@ class UnrealTextToSpeechBlock(Block):
             credentials.api_key,
             input_data.text,
             input_data.voice_id,
+        )
+        # Unreal Speech: $16 / 1M chars = $0.000016/char. Emit USD so the
+        # COST_USD resolver (150 cr/$ via BLOCK_COSTS) bills proportionally
+        # instead of the old flat 5 cr.
+        self.merge_stats(
+            NodeExecutionStats(
+                provider_cost=len(input_data.text) * 0.000016,
+                provider_cost_type="cost_usd",
+            )
         )
         yield "mp3_url", api_response["OutputUri"]

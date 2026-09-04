@@ -1,8 +1,9 @@
 "use client";
 
 import { Button } from "@/components/atoms/Button/Button";
-import { SignInIcon } from "@phosphor-icons/react/dist/ssr";
 import { usePathname, useRouter } from "next/navigation";
+import { Login03Icon } from "@hugeicons/core-free-icons";
+import { Icon } from "@/components/atoms/Icon/Icon";
 
 export function LoginButton() {
   const router = useRouter();
@@ -19,8 +20,7 @@ export function LoginButton() {
     <Button
       onClick={handleLogin}
       size="small"
-      className="flex items-center justify-end space-x-2"
-      leftIcon={<SignInIcon className="h-5 w-5" />}
+      leftIcon={<Icon icon={Login03Icon} className="size-4" />}
       variant="secondary"
     >
       Log In

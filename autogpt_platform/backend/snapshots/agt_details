@@ -3,6 +3,7 @@
   "slug": "test-agent",
   "agent_name": "Test Agent",
   "agent_video": "video.mp4",
+  "agent_output_demo": "demo.mp4",
   "agent_image": [
     "image1.jpg",
     "image2.jpg"
@@ -11,6 +12,7 @@
   "creator_avatar": "avatar1.jpg",
   "sub_heading": "Test agent subheading",
   "description": "Test agent description",
+  "instructions": null,
   "categories": [
     "category1",
     "category2"
@@ -21,7 +23,15 @@
     "1.0.0",
     "1.1.0"
   ],
+  "graph_id": "test-graph-id",
+  "graph_versions": [
+    "1",
+    "2"
+  ],
   "last_updated": "2023-01-01T00:00:00",
-  "active_version_id": null,
-  "has_approved_version": false
+  "recommended_schedule_cron": null,
+  "owning_org_id": null,
+  "active_version_id": "test-version-id",
+  "has_approved_version": true,
+  "changelog": null
 }

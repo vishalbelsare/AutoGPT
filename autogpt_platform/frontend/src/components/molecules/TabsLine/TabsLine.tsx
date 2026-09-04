@@ -34,10 +34,19 @@ function TabsLine(
   );
 }
 
+interface TabsLineListProps
+  extends React.ComponentPropsWithoutRef<typeof TabsPrimitive.List> {
+  /**
+   * When `true`, removes the left padding on the first tab trigger so it
+   * aligns flush with the list's left edge. Defaults to `false`.
+   */
+  flush?: boolean;
+}
+
 const TabsLineList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
->(({ className, ...props }, ref) => {
+  TabsLineListProps
+>(({ className, flush = false, ...props }, ref) => {
   const { activeTabElement } = useTabsLine();
   const listRef = React.useRef<HTMLDivElement>(null);
 
@@ -52,7 +61,8 @@ const TabsLineList = React.forwardRef<
           listRef.current = node;
         }}
         className={cn(
-          "inline-flex w-full items-center justify-start border-b border-zinc-200",
+          "inline-flex w-full items-center justify-start border-b border-zinc-100",
+          flush && "[&>button:first-child]:!pl-0",
           className,
         )}
         {...props}
@@ -109,7 +119,7 @@ const TabsLineTrigger = React.forwardRef<
         elementRef.current = node;
       }}
       className={cn(
-        "relative inline-flex items-center justify-center whitespace-nowrap px-3 py-2 font-sans text-[1rem] font-medium leading-[1.5rem] text-zinc-700 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:text-purple-600",
+        "relative inline-flex items-center justify-center whitespace-nowrap px-3 py-3 font-sans text-[0.875rem] font-medium leading-[1.5rem] text-zinc-700 transition-all data-[state=active]:text-purple-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
         className,
       )}
       {...props}
@@ -125,7 +135,11 @@ const TabsLineContent = React.forwardRef<
   <TabsPrimitive.Content
     ref={ref}
     className={cn(
-      "mt-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-400 focus-visible:ring-offset-2",
+      // Radix marks inactive panels with the `hidden` attribute, but the UA
+      // rule behind it is weaker than any author display utility — a panel
+      // styled `flex`/`grid` stays laid out and keeps stealing space from the
+      // active one. The data-state variant is specific enough to win.
+      "mt-4 data-[state=inactive]:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-400 focus-visible:ring-offset-2",
       className,
     )}
     {...props}

@@ -1,7 +1,10 @@
-import { getServerSupabase } from "@/lib/supabase/server/getServerSupabase";
+import {
+  API_KEY_HEADER_NAME,
+  IMPERSONATION_HEADER_NAME,
+} from "@/lib/constants";
+import { environment } from "@/services/environment";
 import { Key, storage } from "@/services/storage/local-storage";
-import { getAgptServerApiUrl } from "@/lib/env-config";
-import { isServerSide } from "../utils/is-server-side";
+import { cache } from "react";
 
 import { GraphValidationErrorResponse } from "./types";
 
@@ -41,12 +44,11 @@ export function buildRequestUrl(
   method: string,
   payload?: Record<string, any>,
 ): string {
-  let url = baseUrl + path;
+  const url = baseUrl + path;
   const payloadAsQuery = ["GET", "DELETE"].includes(method);
 
   if (payloadAsQuery && payload) {
-    const queryParams = new URLSearchParams(payload);
-    url += `?${queryParams.toString()}`;
+    return buildUrlWithQuery(url, payload);
   }
 
   return url;
@@ -57,56 +59,136 @@ export function buildClientUrl(path: string): string {
 }
 
 export function buildServerUrl(path: string): string {
-  return `${getAgptServerApiUrl()}${path}`;
+  return `${environment.getAGPTServerApiUrl()}${path}`;
 }
 
 export function buildUrlWithQuery(
   url: string,
-  payload?: Record<string, any>,
+  query?: Record<string, any>,
 ): string {
-  if (!payload) return url;
+  if (!query) return url;
 
-  const queryParams = new URLSearchParams(payload);
-  return `${url}?${queryParams.toString()}`;
+  // Drop null/undefined so URLSearchParams doesn't serialize them as the
+  // strings "null" / "undefined".
+  const filteredQuery = Object.entries(query).reduce(
+    (acc, [key, value]) => {
+      if (value != null) {
+        acc[key] = value;
+      }
+      return acc;
+    },
+    {} as Record<string, any>,
+  );
+
+  const queryParams = new URLSearchParams(filteredQuery);
+  return queryParams.size > 0 ? `${url}?${queryParams.toString()}` : url;
 }
 
 export async function handleFetchError(response: Response): Promise<ApiError> {
   const errorMessage = await parseApiError(response);
+
+  // Safely parse response body - it might not be JSON (e.g., HTML error pages)
+  let responseData: any = null;
+  try {
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      responseData = await response.json();
+    } else {
+      // For non-JSON responses, get the text content
+      responseData = await response.text();
+    }
+  } catch (e) {
+    // If parsing fails, use null as response data
+    console.warn("Failed to parse error response body:", e);
+    responseData = null;
+  }
+
   return new ApiError(
     errorMessage || "Request failed",
     response.status,
-    await response.json(),
+    responseData,
   );
 }
 
-export async function getServerAuthToken(): Promise<string> {
-  const supabase = await getServerSupabase();
-
-  if (!supabase) {
-    throw new Error("Supabase client not available");
+/**
+ * Mints a backend-API JWT for the current request's session by calling the
+ * Better Auth token endpoint on this same server.
+ * The Python backend validates the JWT against /api/auth/jwks.
+ *
+ * Deliberately uses an HTTP call instead of importing the Better Auth server
+ * instance: this module is part of the client component graph (via the orval
+ * mutator), where transitively importing pg breaks the browser
+ * bundle. Cookies are read via next/headers `cookies()` (lazily required, as
+ * the previous Supabase client did here) so that a session cookie set
+ * earlier in the SAME server action — e.g. right after sign-in — is visible
+ * immediately, not just on the next request.
+ *
+ * Only React's `cache()` memoizes it — deliberately per-request, not a
+ * cross-request Map keyed on the session cookie. Such a cache hands back a
+ * token without re-checking the session, so it silently outlives revocation:
+ * a stolen cookie would keep minting backend access for the rest of the JWT's
+ * lifetime after logout or `revokeSessionsOnPasswordReset` deleted the session
+ * row, since the backend only verifies the signature and never session
+ * existence. Going back to /api/auth/token each render re-validates it.
+ */
+export const getServerAuthToken = cache(async (): Promise<string | null> => {
+  if (environment.isClientSide()) {
+    // Browser requests go through /api/proxy, which attaches the token
+    // server-side; there is no client-side token.
+    return null;
   }
 
   try {
-    const {
-      data: { session },
-      error,
-    } = await supabase.auth.getSession();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const headersModule = require("next/headers");
+    const nextHeaders = headersModule as typeof import("next/headers");
+    const cookieStore = await nextHeaders.cookies();
 
-    if (error || !session || !session.access_token) {
-      return "no-token-found";
-    }
+    const sessionCookie = cookieStore
+      .getAll()
+      .find(
+        ({ name }) =>
+          name === "better-auth.session_token" ||
+          name === "__Secure-better-auth.session_token",
+      );
+    if (!sessionCookie) return null;
 
-    return session.access_token;
+    const cookieHeader = cookieStore
+      .getAll()
+      .map(({ name, value }) => `${name}=${encodeURIComponent(value)}`)
+      .join("; ");
+
+    const baseURL =
+      process.env.BETTER_AUTH_INTERNAL_URL ||
+      process.env.BETTER_AUTH_URL ||
+      process.env.NEXT_PUBLIC_FRONTEND_BASE_URL ||
+      "http://localhost:3000";
+    // This is a request from the Next server back to itself, which the route
+    // handlers avoid by minting in-process (lib/auth/server/getServerAuthToken).
+    // This module is in the client bundle graph and so cannot import `auth`
+    // (-> `pg`), so the SSR path keeps the HTTP hop. Bound it: an unbounded
+    // self-request can occupy a worker waiting on a worker, and that deadlock
+    // is what made the Copilot page hang forever instead of erroring.
+    const response = await fetch(`${baseURL}/api/auth/token`, {
+      headers: { cookie: cookieHeader },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return null;
+
+    const { token } = (await response.json()) as { token?: string };
+    return token ?? null;
   } catch (error) {
     console.error("Failed to get auth token:", error);
-    return "no-token-found";
+    return null;
   }
-}
+});
 
 export function createRequestHeaders(
-  token: string,
+  token: string | null,
   hasRequestBody: boolean,
   contentType: string = "application/json",
+  originalRequest?: Request,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
 
@@ -114,8 +196,33 @@ export function createRequestHeaders(
     headers["Content-Type"] = contentType;
   }
 
-  if (token && token !== "no-token-found") {
+  if (token) {
     headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  // Forward admin impersonation header if present
+  if (originalRequest) {
+    const impersonationHeader = originalRequest.headers.get(
+      IMPERSONATION_HEADER_NAME,
+    );
+    if (impersonationHeader) {
+      headers[IMPERSONATION_HEADER_NAME] = impersonationHeader;
+    }
+
+    // Forward X-API-Key header if present
+    const apiKeyHeader = originalRequest.headers.get(API_KEY_HEADER_NAME);
+    if (apiKeyHeader) {
+      headers[API_KEY_HEADER_NAME] = apiKeyHeader;
+    }
+
+    // Forward Sentry distributed-tracing headers so the backend transaction
+    // continues the browser span instead of starting a disconnected trace.
+    for (const name of ["sentry-trace", "baggage"] as const) {
+      const value = originalRequest.headers.get(name);
+      if (value) {
+        headers[name] = value;
+      }
+    }
   }
 
   return headers;
@@ -137,6 +244,11 @@ export function serializeRequestBody(
 }
 
 export async function parseApiError(response: Response): Promise<string> {
+  // Handle 413 Payload Too Large with user-friendly message
+  if (response.status === 413) {
+    return "File is too large — max size is 256MB";
+  }
+
   try {
     const errorData = await response.clone().json();
 
@@ -156,6 +268,16 @@ export async function parseApiError(response: Response): Promise<string> {
     if (typeof errorData.detail === "object" && errorData.detail !== null) {
       if (errorData.detail.message) return errorData.detail.message;
       return response.statusText; // Fallback to status text if no message
+    }
+
+    // Check for file size error from backend
+    if (
+      typeof errorData.detail === "string" &&
+      errorData.detail.includes("exceeds the maximum")
+    ) {
+      const match = errorData.detail.match(/maximum allowed size of (\d+)MB/);
+      const maxSize = match ? match[1] : "256";
+      return `File is too large — max size is ${maxSize}MB`;
     }
 
     return errorData.detail || errorData.error || response.statusText;
@@ -183,7 +305,7 @@ export async function parseApiResponse(response: Response): Promise<any> {
   }
 }
 
-function isAuthenticationError(
+export function isAuthenticationError(
   response: Response,
   errorDetail: string,
 ): boolean {
@@ -196,8 +318,8 @@ function isAuthenticationError(
   );
 }
 
-function isLogoutInProgress(): boolean {
-  if (isServerSide()) return false;
+export function isLogoutInProgress(): boolean {
+  if (environment.isServerSide()) return false;
 
   try {
     // Check if logout was recently triggered
@@ -223,6 +345,7 @@ export async function makeAuthenticatedRequest(
   url: string,
   payload?: Record<string, any>,
   contentType: string = "application/json",
+  originalRequest?: Request,
 ): Promise<any> {
   const token = await getServerAuthToken();
   const payloadAsQuery = ["GET", "DELETE"].includes(method);
@@ -236,7 +359,12 @@ export async function makeAuthenticatedRequest(
 
   const response = await fetch(requestUrl, {
     method,
-    headers: createRequestHeaders(token, hasRequestBody, contentType),
+    headers: createRequestHeaders(
+      token,
+      hasRequestBody,
+      contentType,
+      originalRequest,
+    ),
     body: hasRequestBody
       ? serializeRequestBody(payload, contentType)
       : undefined,
@@ -274,13 +402,17 @@ export async function makeAuthenticatedRequest(
 export async function makeAuthenticatedFileUpload(
   url: string,
   formData: FormData,
+  originalRequest?: Request,
 ): Promise<string> {
   const token = await getServerAuthToken();
 
-  const headers: Record<string, string> = {};
-  if (token && token !== "no-token-found") {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
+  // Reuse existing header creation logic but exclude Content-Type for FormData
+  const headers = createRequestHeaders(
+    token,
+    false,
+    "application/json",
+    originalRequest,
+  );
 
   // Don't set Content-Type for FormData - let the browser set it with boundary
   const response = await fetch(url, {

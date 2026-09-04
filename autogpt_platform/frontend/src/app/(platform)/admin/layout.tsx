@@ -1,39 +1,20 @@
-import { Sidebar } from "@/components/agptui/Sidebar";
-import { Users, DollarSign } from "lucide-react";
+"use client";
 
-import { IconSliders } from "@/components/ui/icons";
+import { usePlatformChrome } from "@/app/(platform)/PlatformChrome/usePlatformChrome";
+import { ReactNode } from "react";
 
-const sidebarLinkGroups = [
-  {
-    links: [
-      {
-        text: "Marketplace Management",
-        href: "/admin/marketplace",
-        icon: <Users className="h-6 w-6" />,
-      },
-      {
-        text: "User Spending",
-        href: "/admin/spending",
-        icon: <DollarSign className="h-6 w-6" />,
-      },
-      {
-        text: "Admin User Management",
-        href: "/admin/settings",
-        icon: <IconSliders className="h-6 w-6" />,
-      },
-    ],
-  },
-];
+import { AdminClassicShell } from "./components/AdminClassicShell";
+import { AdminNewShell } from "./components/AdminNewShell";
 
-export default function AdminLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex min-h-screen w-screen flex-col lg:flex-row">
-      <Sidebar linkGroups={sidebarLinkGroups} />
-      <div className="flex-1 pl-4">{children}</div>
-    </div>
-  );
+// Switcher between the classic admin shell (legacy sidebar under the top
+// Navbar) and the new-layout shell (settings-style sidebar, no Navbar). The
+// classic shell can be deleted wholesale once the new layout ships.
+export default function AdminLayout({ children }: { children: ReactNode }) {
+  const { isNewLayoutActive } = usePlatformChrome();
+
+  if (isNewLayoutActive) {
+    return <AdminNewShell>{children}</AdminNewShell>;
+  }
+
+  return <AdminClassicShell>{children}</AdminClassicShell>;
 }

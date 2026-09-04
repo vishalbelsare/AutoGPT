@@ -16,7 +16,7 @@ To run the AutoGPT Platform, follow these steps:
 1. Clone this repository to your local machine and navigate to the `autogpt_platform` directory within the repository:
 
    ```
-   git clone <https://github.com/Significant-Gravitas/AutoGPT.git | git@github.com:Significant-Gravitas/AutoGPT.git>
+   git clone https://github.com/Significant-Gravitas/AutoGPT.git
    cd AutoGPT/autogpt_platform
    ```
 
@@ -37,6 +37,37 @@ To run the AutoGPT Platform, follow these steps:
    This command will start all the necessary backend services defined in the `docker-compose.yml` file in detached mode.
 
 4. After all the services are in ready state, open your browser and navigate to `http://localhost:3000` to access the AutoGPT Platform frontend.
+
+### Running Just Core services
+
+You can now run the following to enable just the core services.
+
+```
+# For help
+make help
+
+# Run just Postgres + Redis + RabbitMQ
+make start-core
+
+# Stop core services
+make stop-core
+
+# View logs from core services 
+make logs-core
+
+# Run formatting and linting for backend and frontend
+make format
+
+# Run migrations for backend database
+make migrate
+
+# Run backend server
+make run-backend
+
+# Run frontend development server
+make run-frontend
+
+```
 
 ### Docker Compose Commands
 

@@ -19,6 +19,10 @@ class DataForSeoClient:
             trusted_origins=["https://api.dataforseo.com"],
             raise_for_status=False,
         )
+        # USD cost reported by DataForSEO on the most recent successful call.
+        # Populated by keyword_suggestions / related_keywords so the caller
+        # can surface it via NodeExecutionStats.provider_cost for billing.
+        self.last_cost_usd: float = 0.0
 
     def _get_headers(self) -> Dict[str, str]:
         """Generate the authorization header using Basic Auth."""
@@ -97,6 +101,9 @@ class DataForSeoClient:
         if data.get("tasks") and len(data["tasks"]) > 0:
             task = data["tasks"][0]
             if task.get("status_code") == 20000:  # Success code
+                # DataForSEO reports per-task USD cost; stash it so callers
+                # can populate NodeExecutionStats.provider_cost.
+                self.last_cost_usd = float(task.get("cost") or 0.0)
                 return task.get("result", [])
             else:
                 error_msg = task.get("status_message", "Task failed")
@@ -113,6 +120,7 @@ class DataForSeoClient:
         include_serp_info: bool = False,
         include_clickstream_data: bool = False,
         limit: int = 100,
+        depth: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get related keywords from DataForSEO Labs.
@@ -125,6 +133,7 @@ class DataForSeoClient:
             include_serp_info: Include SERP data
             include_clickstream_data: Include clickstream metrics
             limit: Maximum number of results (up to 3000)
+            depth: Keyword search depth (0-4), controls number of returned keywords
 
         Returns:
             API response with related keywords
@@ -148,6 +157,8 @@ class DataForSeoClient:
             task_data["include_clickstream_data"] = include_clickstream_data
         if limit is not None:
             task_data["limit"] = limit
+        if depth is not None:
+            task_data["depth"] = depth
 
         payload = [task_data]
 
@@ -170,6 +181,9 @@ class DataForSeoClient:
         if data.get("tasks") and len(data["tasks"]) > 0:
             task = data["tasks"][0]
             if task.get("status_code") == 20000:  # Success code
+                # DataForSEO reports per-task USD cost; stash it so callers
+                # can populate NodeExecutionStats.provider_cost.
+                self.last_cost_usd = float(task.get("cost") or 0.0)
                 return task.get("result", [])
             else:
                 error_msg = task.get("status_message", "Task failed")

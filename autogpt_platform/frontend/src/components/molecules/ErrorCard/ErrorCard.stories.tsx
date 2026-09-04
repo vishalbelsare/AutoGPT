@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/nextjs";
 import { ErrorCard } from "./ErrorCard";
-import { ArrowClockwise } from "@phosphor-icons/react";
 
 const meta: Meta<typeof ErrorCard> = {
   title: "Molecules/ErrorCard",
@@ -21,7 +20,7 @@ A reusable error card component that handles API query responses gracefully with
 - **User-friendly messages** - Non-technical, funny error messages for HTTP errors
 - **Loading state** - Supports custom loading slot or default spinner
 - **Action buttons** - Sentry error reporting with toast notifications and Discord help link
-- **Phosphor icons** - Uses phosphor icons throughout
+- **Hugeicons** - Uses Hugeicons via the Icon atom throughout
 - **TypeScript support** - Full TypeScript interface support
 
 ### 🎯 Magic Usage Pattern
@@ -85,11 +84,6 @@ The component will automatically:
       table: {
         defaultValue: { summary: '"data"' },
       },
-    },
-    loadingSlot: {
-      control: false,
-      description:
-        "Custom loading component to show instead of default spinner",
     },
     onRetry: {
       control: false,
@@ -182,29 +176,11 @@ export const HttpError403: Story = {
 };
 
 /**
- * Default loading state shows a spinning phosphor icon.
+ * Default loading state shows a spinning icon.
  */
 export const LoadingState: Story = {
   args: {
     isSuccess: false,
-  },
-};
-
-/**
- * You can provide a custom loading component via the loadingSlot prop.
- */
-export const CustomLoadingSlot: Story = {
-  args: {
-    loadingSlot: (
-      <div className="flex items-center gap-3">
-        <ArrowClockwise
-          size={20}
-          weight="bold"
-          className="animate-spin text-purple-500"
-        />
-        <span className="text-zinc-600">Loading your awesome data...</span>
-      </div>
-    ),
   },
 };
 

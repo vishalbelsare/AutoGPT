@@ -1,8 +1,8 @@
 "use client";
 
-import { Separator } from "@/components/ui/separator";
 import { NotificationPreference } from "@/app/api/__generated__/models/notificationPreference";
-import { User } from "@supabase/supabase-js";
+import { Separator } from "@/components/__legacy__/ui/separator";
+import type { User } from "@/lib/auth/types";
 import { EmailForm } from "./components/EmailForm/EmailForm";
 import { NotificationForm } from "./components/NotificationForm/NotificationForm";
 import { TimezoneForm } from "./components/TimezoneForm/TimezoneForm";
@@ -18,6 +18,8 @@ export function SettingsForm({
   user,
   timezone,
 }: SettingsFormProps) {
+  if (!user || !preferences) return null;
+
   return (
     <div className="flex flex-col gap-8">
       <EmailForm user={user} />

@@ -7,8 +7,14 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
-from backend.data.execution import UserContext
+from backend.blocks._base import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
+from backend.data.execution import ExecutionContext
 from backend.data.model import SchemaField
 
 # Shared timezone literal type for all time/date blocks
@@ -131,7 +137,7 @@ class TimeISO8601Format(BaseModel):
 
 
 class GetCurrentTimeBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         trigger: str = SchemaField(
             description="Trigger any data to output the current time"
         )
@@ -141,7 +147,7 @@ class GetCurrentTimeBlock(Block):
             default=TimeStrftimeFormat(discriminator="strftime"),
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         time: str = SchemaField(
             description="Current time in the specified format (default: %H:%M:%S)"
         )
@@ -182,10 +188,9 @@ class GetCurrentTimeBlock(Block):
         )
 
     async def run(
-        self, input_data: Input, *, user_context: UserContext, **kwargs
+        self, input_data: Input, *, execution_context: ExecutionContext, **kwargs
     ) -> BlockOutput:
-        # Extract timezone from user_context (always present)
-        effective_timezone = user_context.timezone
+        effective_timezone = execution_context.user_timezone
 
         # Get the appropriate timezone
         tz = _get_timezone(input_data.format_type, effective_timezone)
@@ -221,7 +226,7 @@ class DateISO8601Format(BaseModel):
 
 
 class GetCurrentDateBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         trigger: str = SchemaField(
             description="Trigger any data to output the current date"
         )
@@ -236,7 +241,7 @@ class GetCurrentDateBlock(Block):
             default=DateStrftimeFormat(discriminator="strftime"),
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         date: str = SchemaField(
             description="Current date in the specified format (default: YYYY-MM-DD)"
         )
@@ -270,13 +275,17 @@ class GetCurrentDateBlock(Block):
             test_output=[
                 (
                     "date",
-                    lambda t: abs(datetime.now() - datetime.strptime(t, "%Y-%m-%d"))
-                    < timedelta(days=8),  # 7 days difference + 1 day error margin.
+                    lambda t: abs(
+                        datetime.now().date() - datetime.strptime(t, "%Y-%m-%d").date()
+                    )
+                    <= timedelta(days=8),  # 7 days difference + 1 day error margin.
                 ),
                 (
                     "date",
-                    lambda t: abs(datetime.now() - datetime.strptime(t, "%m/%d/%Y"))
-                    < timedelta(days=8),
+                    lambda t: abs(
+                        datetime.now().date() - datetime.strptime(t, "%m/%d/%Y").date()
+                    )
+                    <= timedelta(days=8),
                     # 7 days difference + 1 day error margin.
                 ),
                 (
@@ -288,10 +297,10 @@ class GetCurrentDateBlock(Block):
             ],
         )
 
-    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
-        # Extract timezone from user_context (required keyword argument)
-        user_context: UserContext = kwargs["user_context"]
-        effective_timezone = user_context.timezone
+    async def run(
+        self, input_data: Input, *, execution_context: ExecutionContext, **kwargs
+    ) -> BlockOutput:
+        effective_timezone = execution_context.user_timezone
 
         try:
             offset = int(input_data.offset)
@@ -328,7 +337,7 @@ class ISO8601Format(BaseModel):
 
 
 class GetCurrentDateAndTimeBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         trigger: str = SchemaField(
             description="Trigger any data to output the current date and time"
         )
@@ -338,7 +347,7 @@ class GetCurrentDateAndTimeBlock(Block):
             default=StrftimeFormat(discriminator="strftime"),
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         date_time: str = SchemaField(
             description="Current date and time in the specified format (default: YYYY-MM-DD HH:MM:SS)"
         )
@@ -382,7 +391,7 @@ class GetCurrentDateAndTimeBlock(Block):
                     lambda t: abs(
                         datetime.now().date() - datetime.strptime(t, "%Y/%m/%d").date()
                     )
-                    < timedelta(days=1),  # Date format only, no time component
+                    <= timedelta(days=1),  # Date format only, no time component
                 ),
                 (
                     "date_time",
@@ -394,10 +403,10 @@ class GetCurrentDateAndTimeBlock(Block):
             ],
         )
 
-    async def run(self, input_data: Input, **kwargs) -> BlockOutput:
-        # Extract timezone from user_context (required keyword argument)
-        user_context: UserContext = kwargs["user_context"]
-        effective_timezone = user_context.timezone
+    async def run(
+        self, input_data: Input, *, execution_context: ExecutionContext, **kwargs
+    ) -> BlockOutput:
+        effective_timezone = execution_context.user_timezone
 
         # Get the appropriate timezone
         tz = _get_timezone(input_data.format_type, effective_timezone)
@@ -415,7 +424,7 @@ class GetCurrentDateAndTimeBlock(Block):
 
 
 class CountdownTimerBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         input_message: Any = SchemaField(
             advanced=False,
             description="Message to output after the timer finishes",
@@ -434,14 +443,23 @@ class CountdownTimerBlock(Block):
             advanced=False, description="Duration in days", default=0
         )
         repeat: int = SchemaField(
-            description="Number of times to repeat the timer",
+            description="Number of times to repeat the timer (1–1000)",
             default=1,
+            ge=1,
+            le=1000,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         output_message: Any = SchemaField(
             description="Message after the timer finishes"
         )
+
+    MAX_TOTAL_SECONDS = 7 * 86400  # 7 days
+    MIN_REPEAT = 1
+    MAX_REPEAT = 1000
+    # Override the default 30-minute block timeout so the configured cap
+    # is actually reachable; add a small buffer for scheduler overhead.
+    execution_timeout_seconds: int | None = MAX_TOTAL_SECONDS + 60
 
     def __init__(self):
         super().__init__(
@@ -460,15 +478,43 @@ class CountdownTimerBlock(Block):
             ],
         )
 
+    @staticmethod
+    def _coerce_duration_field(field_name: str, value: Union[int, str]) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field_name} must be a valid integer, got {value!r}")
+
     async def run(self, input_data: Input, **kwargs) -> BlockOutput:
-        seconds = int(input_data.seconds)
-        minutes = int(input_data.minutes)
-        hours = int(input_data.hours)
-        days = int(input_data.days)
+        seconds = self._coerce_duration_field("seconds", input_data.seconds)
+        minutes = self._coerce_duration_field("minutes", input_data.minutes)
+        hours = self._coerce_duration_field("hours", input_data.hours)
+        days = self._coerce_duration_field("days", input_data.days)
+        repeat = input_data.repeat
+
+        # Defense-in-depth: also enforce here in case Pydantic constraints
+        # are bypassed by a caller that constructs Input.model_construct().
+        if not self.MIN_REPEAT <= repeat <= self.MAX_REPEAT:
+            raise ValueError(
+                f"Repeat must be between {self.MIN_REPEAT} and {self.MAX_REPEAT}, "
+                f"got {repeat}"
+            )
 
         total_seconds = seconds + minutes * 60 + hours * 3600 + days * 86400
 
-        for _ in range(input_data.repeat):
+        if total_seconds < 0:
+            raise ValueError(
+                f"Countdown duration must be non-negative, got {total_seconds}s"
+            )
+        cumulative_seconds = total_seconds * repeat
+        if cumulative_seconds > self.MAX_TOTAL_SECONDS:
+            raise ValueError(
+                f"Cumulative countdown duration {cumulative_seconds}s "
+                f"(per-iteration {total_seconds}s × repeat {repeat}) "
+                f"exceeds max ({self.MAX_TOTAL_SECONDS}s = 7 days)"
+            )
+
+        for _ in range(repeat):
             if total_seconds > 0:
                 await asyncio.sleep(total_seconds)
             yield "output_message", input_data.input_message

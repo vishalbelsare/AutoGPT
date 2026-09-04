@@ -1,15 +1,3 @@
-export enum SubmissionStatus {
-  DRAFT = "DRAFT",
-  PENDING = "PENDING",
-  APPROVED = "APPROVED",
-  REJECTED = "REJECTED",
-}
-export type ReviewSubmissionRequest = {
-  store_listing_version_id: string;
-  is_approved: boolean;
-  comments: string; // External comments visible to creator
-  internal_comments?: string; // Admin-only comments
-};
 export type Category = {
   category: string;
   description: string;
@@ -27,7 +15,7 @@ export type BlockCost = {
   cost_filter: Record<string, any>;
 };
 
-/* Mirror of backend/data/block.py:Block */
+/* Mirror of backend/blocks/_base.py:Block */
 export type Block = {
   id: string;
   name: string;
@@ -58,6 +46,7 @@ export type BlockIOSimpleTypeSubSchema =
   | BlockIOCredentialsSubSchema
   | BlockIOKVSubSchema
   | BlockIOArraySubSchema
+  | BlockIOTableSubSchema
   | BlockIOStringSubSchema
   | BlockIONumberSubSchema
   | BlockIOBooleanSubSchema
@@ -78,6 +67,8 @@ export enum DataType {
   OBJECT = "object",
   KEY_VALUE = "key-value",
   ARRAY = "array",
+  TABLE = "table",
+  GOOGLE_DRIVE_PICKER = "google-drive-picker",
 }
 
 export type BlockIOSubSchemaMeta = {
@@ -114,6 +105,67 @@ export type BlockIOArraySubSchema = BlockIOSubSchemaMeta & {
   secret?: boolean;
 };
 
+export type GoogleDriveFile = {
+  id: string;
+  name?: string;
+  mimeType?: string;
+  url?: string;
+  iconUrl?: string;
+  isFolder?: boolean;
+};
+
+/** Valid view types for Google Drive Picker - matches backend AttachmentView */
+export type AttachmentView =
+  | "DOCS"
+  | "DOCUMENTS"
+  | "SPREADSHEETS"
+  | "PRESENTATIONS"
+  | "DOCS_IMAGES"
+  | "FOLDERS";
+
+export type GoogleDrivePickerConfig = {
+  multiselect?: boolean;
+  allow_folder_selection?: boolean;
+  allowed_views?: AttachmentView[];
+  allowed_mime_types?: string[];
+  scopes?: string[];
+  /**
+   * Auto-credentials configuration for combined picker + credentials fields.
+   * When present, the picker will include _credentials_id in the output.
+   */
+  auto_credentials?: {
+    provider: string;
+    type: string;
+    scopes?: string[];
+    kwarg_name: string;
+  };
+};
+
+/**
+ * Schema for Google Drive Picker input fields.
+ * When multiselect=false: type="object" (single GoogleDriveFile)
+ * When multiselect=true: type="array" with items={ type="object" } (array of GoogleDriveFile)
+ */
+export type GoogleDrivePickerSchema = BlockIOSubSchemaMeta & {
+  type: "object" | "array";
+  format: "google-drive-picker";
+  google_drive_picker_config?: GoogleDrivePickerConfig;
+};
+
+// Table cell values are typically primitives
+export type TableCellValue = string | number | boolean | null;
+
+export type TableRow = Record<string, TableCellValue>;
+
+export type BlockIOTableSubSchema = BlockIOSubSchemaMeta & {
+  type: "array";
+  format: "table";
+  items: BlockIOObjectSubSchema;
+  const?: TableRow[];
+  default?: TableRow[];
+  secret?: boolean;
+};
+
 export type BlockIOStringSubSchema = BlockIOSubSchemaMeta & {
   type: "string";
   enum?: string[];
@@ -142,7 +194,8 @@ export type CredentialsType =
   | "api_key"
   | "oauth2"
   | "user_password"
-  | "host_scoped";
+  | "host_scoped"
+  | "device_code";
 
 export type Credentials =
   | APIKeyCredentials
@@ -168,6 +221,7 @@ export type BlockIOCredentialsSubSchema = BlockIOObjectSubSchema & {
   credentials_types: Array<CredentialsType>;
   discriminator?: string;
   discriminator_mapping?: Record<string, CredentialsProviderName>;
+  discriminator_type_mapping?: Record<string, CredentialsType[]>;
   discriminator_values?: any[];
   secret?: boolean;
 };
@@ -181,8 +235,8 @@ export type BlockIONullSubSchema = BlockIOSubSchemaMeta & {
 // At the time of writing, combined schemas only occur on the first nested level in a
 // block schema. It is typed this way to make the use of these objects less tedious.
 type BlockIOCombinedTypeSubSchema = BlockIOSubSchemaMeta & {
-  type: never;
-  const: never;
+  type?: never;
+  const?: never;
 } & (
     | {
         allOf: [BlockIOSimpleTypeSubSchema];
@@ -192,6 +246,7 @@ type BlockIOCombinedTypeSubSchema = BlockIOSubSchemaMeta & {
         anyOf: BlockIOSimpleTypeSubSchema[];
         default?: string | number | boolean | null;
         secret?: boolean;
+        format?: string; // For table format and other formats on anyOf schemas
       }
     | BlockIOOneOfSubSchema
     | BlockIODiscriminatedOneOfSubSchema
@@ -227,7 +282,7 @@ export type NodeCreatable = {
 export type Node = NodeCreatable & {
   input_links: Link[];
   output_links: Link[];
-  webhook?: Webhook;
+  webhook_id?: string | null;
 };
 
 /* Mirror of backend/data/graph.py:Link */
@@ -250,6 +305,9 @@ export type GraphExecutionMeta = {
   user_id: UserID;
   graph_id: GraphID;
   graph_version: number;
+  inputs: Record<string, any> | null;
+  credential_inputs: Record<string, CredentialsMetaInput> | null;
+  nodes_input_masks: Record<string, Record<string, any>> | null;
   preset_id: LibraryAgentPresetID | null;
   status:
     | "QUEUED"
@@ -257,9 +315,10 @@ export type GraphExecutionMeta = {
     | "COMPLETED"
     | "TERMINATED"
     | "FAILED"
-    | "INCOMPLETE";
-  started_at: Date;
-  ended_at: Date;
+    | "INCOMPLETE"
+    | "REVIEW";
+  started_at: Date | null;
+  ended_at: Date | null;
   stats: {
     error: string | null;
     cost: number;
@@ -276,7 +335,7 @@ export type GraphExecutionMeta = {
 export type GraphExecutionID = Brand<string, "GraphExecutionID">;
 
 /* Mirror of backend/data/execution.py:GraphExecution */
-export type GraphExecution = GraphExecutionMeta & {
+export type GraphExecution = Omit<GraphExecutionMeta, "inputs"> & {
   inputs: Record<string, any>;
   outputs: Record<string, Array<any>>;
   node_executions?: NodeExecutionResult[];
@@ -293,38 +352,76 @@ export type GraphMeta = {
   user_id: UserID;
   version: number;
   is_active: boolean;
+  created_at: Date;
   name: string;
   description: string;
+  instructions?: string | null;
+  recommended_schedule_cron: string | null;
   forked_from_id?: GraphID | null;
   forked_from_version?: number | null;
-  input_schema: GraphIOSchema;
-  output_schema: GraphIOSchema;
-  has_external_trigger: boolean;
-  credentials_input_schema: CredentialsInputSchema;
 };
 
 export type GraphID = Brand<string, "GraphID">;
 
 /* Derived from backend/data/graph.py:Graph._generate_schema() */
-export type GraphIOSchema = {
+export type GraphInputSchema = {
   type: "object";
-  properties: Record<string, GraphIOSubSchema>;
-  required: (keyof BlockIORootSchema["properties"])[];
+  properties: Record<string, GraphInputSubSchema>;
+  required: (keyof GraphInputSchema["properties"])[];
 };
-export type GraphIOSubSchema = Omit<
-  BlockIOSubSchemaMeta,
-  "placeholder" | "depends_on" | "hidden"
-> & {
-  type: never; // bodge to avoid type checking hell; doesn't exist at runtime
-  default?: string;
+export type GraphInputSubSchema = GraphOutputSubSchema &
+  (
+    | { type?: never; default: any | null } // AgentInputBlock (generic Any type)
+    | { type: "string"; format: "short-text"; default: string | null } // AgentShortTextInputBlock
+    | { type: "string"; format: "long-text"; default: string | null } // AgentLongTextInputBlock
+    | { type: "integer"; default: number | null } // AgentNumberInputBlock
+    | { type: "string"; format: "date"; default: string | null } // AgentDateInputBlock
+    | { type: "string"; format: "time"; default: string | null } // AgentTimeInputBlock
+    | { type: "string"; format: "file"; default: string | null } // AgentFileInputBlock
+    | { type: "string"; enum: string[]; default: string | null } // AgentDropdownInputBlock
+    | { type: "boolean"; default: boolean } // AgentToggleInputBlock
+    | {
+        // AgentTableInputBlock
+        type: "array";
+        format: "table";
+        items: {
+          type: "object";
+          properties: Record<string, { type: "string" }>;
+        };
+        default: Array<Record<string, string>> | null;
+      }
+    | {
+        // AgentGoogleDriveFileInputBlock
+        type: "object";
+        format: "google-drive-picker";
+        google_drive_picker_config?: GoogleDrivePickerConfig;
+        default: GoogleDriveFile | null;
+      }
+  );
+export type GraphOutputSchema = {
+  type: "object";
+  properties: Record<string, GraphOutputSubSchema>;
+  required: (keyof GraphOutputSchema["properties"])[];
+};
+export type GraphOutputSubSchema = {
+  // TODO: typed outputs based on the incoming edges?
+  title: string;
+  description?: string;
+  advanced: boolean;
   secret: boolean;
-  metadata?: any;
 };
 
 export type CredentialsInputSchema = {
   type: "object";
   properties: Record<string, BlockIOCredentialsSubSchema>;
-  required: (keyof CredentialsInputSchema["properties"])[];
+  required?: (keyof CredentialsInputSchema["properties"])[];
+};
+
+/* Mirror of backend/data/graph.py:GraphTriggerInfo */
+export type GraphTriggerInfo = {
+  provider: CredentialsProviderName;
+  config_schema: BlockIORootSchema;
+  credentials_input_name: string | null;
 };
 
 /* Mirror of backend/data/graph.py:Graph */
@@ -332,12 +429,31 @@ export type Graph = GraphMeta & {
   nodes: Node[];
   links: Link[];
   sub_graphs: Omit<Graph, "sub_graphs">[]; // Flattened sub-graphs
+  input_schema: GraphInputSchema;
+  output_schema: GraphOutputSchema;
+  credentials_input_schema: CredentialsInputSchema;
+} & (
+    | {
+        has_external_trigger: true;
+        trigger_setup_info: GraphTriggerInfo;
+      }
+    | {
+        has_external_trigger: false;
+        trigger_setup_info: null;
+      }
+  );
+
+export type SkippedWebhookPreset = {
+  id: string;
+  name: string;
+  pinned_version: number;
 };
 
 export type GraphUpdateable = Omit<
   Graph,
   | "user_id"
   | "version"
+  | "created_at"
   | "is_active"
   | "nodes"
   | "links"
@@ -346,13 +462,14 @@ export type GraphUpdateable = Omit<
   | "output_schema"
   | "credentials_input_schema"
   | "has_external_trigger"
+  | "trigger_setup_info"
 > & {
   version?: number;
   is_active?: boolean;
   nodes: NodeCreatable[];
   links: LinkCreatable[];
-  input_schema?: GraphIOSchema;
-  output_schema?: GraphIOSchema;
+  input_schema?: GraphInputSchema;
+  output_schema?: GraphOutputSchema;
 };
 
 export type GraphCreatable = _GraphCreatableInner & {
@@ -374,7 +491,8 @@ export type NodeExecutionResult = {
     | "RUNNING"
     | "COMPLETED"
     | "TERMINATED"
-    | "FAILED";
+    | "FAILED"
+    | "REVIEW";
   input_data: Record<string, any>;
   output_data: Record<string, Array<any>>;
   add_time: Date;
@@ -394,42 +512,39 @@ export type GraphValidationErrorResponse = {
 
 /* *** LIBRARY *** */
 
-/* Mirror of backend/server/v2/library/model.py:LibraryAgent */
+/* Mirror of backend/api/features/library/model.py:LibraryAgent */
 export type LibraryAgent = {
   id: LibraryAgentID;
   graph_id: GraphID;
   graph_version: number;
-  image_url?: string;
+  image_url: string | null;
   creator_name: string;
   creator_image_url: string;
   status: AgentStatus;
   updated_at: Date;
   name: string;
   description: string;
-  input_schema: GraphIOSchema;
-  output_schema: GraphIOSchema;
+  instructions?: string | null;
+  input_schema: GraphInputSchema;
+  output_schema: GraphOutputSchema;
   credentials_input_schema: CredentialsInputSchema;
   new_output: boolean;
   can_access_graph: boolean;
+  is_favorite: boolean;
   is_latest_version: boolean;
+  recommended_schedule_cron: string | null;
 } & (
   | {
       has_external_trigger: true;
-      trigger_setup_info: LibraryAgentTriggerInfo;
+      trigger_setup_info: GraphTriggerInfo;
     }
   | {
       has_external_trigger: false;
-      trigger_setup_info?: undefined;
+      trigger_setup_info: null;
     }
 );
 
 export type LibraryAgentID = Brand<string, "LibraryAgentID">;
-
-export type LibraryAgentTriggerInfo = {
-  provider: CredentialsProviderName;
-  config_schema: BlockIORootSchema;
-  credentials_input_name?: string;
-};
 
 export enum AgentStatus {
   COMPLETED = "COMPLETED",
@@ -445,6 +560,7 @@ export type LibraryAgentResponse = {
 
 export type LibraryAgentPreset = {
   id: LibraryAgentPresetID;
+  created_at: Date;
   updated_at: Date;
   graph_id: GraphID;
   graph_version: number;
@@ -453,8 +569,16 @@ export type LibraryAgentPreset = {
   name: string;
   description: string;
   is_active: boolean;
-  webhook_id?: string;
-};
+} & (
+  | {
+      webhook_id: string;
+      webhook: Webhook;
+    }
+  | {
+      webhook_id?: undefined;
+      webhook?: undefined;
+    }
+);
 
 export type LibraryAgentPresetID = Brand<string, "LibraryAgentPresetID">;
 
@@ -465,14 +589,14 @@ export type LibraryAgentPresetResponse = {
 
 export type LibraryAgentPresetCreatable = Omit<
   LibraryAgentPreset,
-  "id" | "updated_at" | "is_active"
+  "id" | "created_at" | "updated_at" | "is_active"
 > & {
   is_active?: boolean;
 };
 
 export type LibraryAgentPresetCreatableFromGraphExecution = Omit<
   LibraryAgentPresetCreatable,
-  "graph_id" | "graph_version" | "inputs"
+  "graph_id" | "graph_version" | "inputs" | "credentials"
 > & {
   graph_execution_id: GraphExecutionID;
 };
@@ -484,11 +608,12 @@ export type LibraryAgentPresetUpdatable = Partial<
 export enum LibraryAgentSortEnum {
   CREATED_AT = "createdAt",
   UPDATED_AT = "updatedAt",
+  LAST_RUN = "lastRunAt",
 }
 
 /* *** CREDENTIALS *** */
 
-/* Mirror of backend/server/integrations/router.py:CredentialsMetaResponse */
+/* Mirror of backend/api/features/integrations/router.py:CredentialsMetaResponse */
 export type CredentialsMetaResponse = {
   id: string;
   provider: CredentialsProviderName;
@@ -497,15 +622,17 @@ export type CredentialsMetaResponse = {
   scopes?: Array<string>;
   username?: string;
   host?: string;
+  is_system?: boolean;
+  is_managed?: boolean;
 };
 
-/* Mirror of backend/server/integrations/router.py:CredentialsDeletionResponse */
+/* Mirror of backend/api/features/integrations/router.py:CredentialsDeletionResponse */
 export type CredentialsDeleteResponse = {
   deleted: true;
   revoked: boolean | null;
 };
 
-/* Mirror of backend/server/integrations/router.py:CredentialsDeletionNeedsConfirmationResponse */
+/* Mirror of backend/api/features/integrations/router.py:CredentialsDeletionNeedsConfirmationResponse */
 export type CredentialsDeleteNeedConfirmationResponse = {
   deleted: false;
   need_confirmation: true;
@@ -516,7 +643,7 @@ export type CredentialsDeleteNeedConfirmationResponse = {
 export type CredentialsMetaInput = {
   id: string;
   type: CredentialsType;
-  title?: string;
+  title?: string | null;
   provider: string;
 };
 
@@ -565,28 +692,32 @@ export type HostScopedCredentials = BaseCredentials & {
 
 // Mirror of backend/backend/data/notifications.py:NotificationType
 export type NotificationType =
-  | "AGENT_RUN"
-  | "ZERO_BALANCE"
-  | "LOW_BALANCE"
-  | "BLOCK_EXECUTION_FAILED"
-  | "CONTINUOUS_AGENT_ERROR"
-  | "DAILY_SUMMARY"
-  | "WEEKLY_SUMMARY"
-  | "MONTHLY_SUMMARY"
-  | "AGENT_APPROVED"
-  | "AGENT_REJECTED";
+  | "BRIEFING"
+  | "ALERT"
+  | "VERDICT"
+  | "OPS"
+  | "SUBSCRIPTION_WELCOME"
+  | "PAYMENT_FAILED"
+  | "PAYMENT_FINAL_NOTICE"
+  | "SUBSCRIPTION_CANCELLED"
+  | "SUBSCRIPTION_RESUMED"
+  | "SUBSCRIPTION_ENDED";
 
-// Mirror of backend/backend/data/notifications.py:NotificationPreference
+export type BriefingFrequency = "DAILY" | "WEEKLY" | "MONTHLY" | "OFF";
+
+// Mirror of backend/backend/data/notifications.py:NotificationPreferenceDTO.
+// A volume knob rather than a checkbox list: billing and account messages are
+// service mail and are not represented here.
 export type NotificationPreferenceDTO = {
   email: string;
-  preferences: { [key in NotificationType]: boolean };
+  briefing_frequency: BriefingFrequency;
+  alerts_enabled: boolean;
+  store_verdicts_enabled: boolean;
   daily_limit: number;
 };
 
 export type NotificationPreference = NotificationPreferenceDTO & {
   user_id: UserID;
-  emails_sent_today: number;
-  last_reset_date: Date;
 };
 
 /* Mirror of backend/data/integrations.py:Webhook */
@@ -594,9 +725,9 @@ export type Webhook = {
   id: string;
   url: string;
   provider: CredentialsProviderName;
-  credentials_id: string;
+  credentials_id: string; // empty string if not appicable
   webhook_type: string;
-  resource?: string;
+  resource: string; // empty string if not appicable
   events: string[];
   secret: string;
   config: Record<string, any>;
@@ -620,11 +751,13 @@ export enum BlockUIType {
   AGENT = "Agent",
   AI = "AI",
   AYRSHARE = "Ayrshare",
+  MCP_TOOL = "MCP Tool",
 }
 
 export enum SpecialBlockID {
   AGENT = "e189baac-8c20-45a1-94a7-55177ea42565",
-  SMART_DECISION = "3b191d9f-356f-482d-8238-ba04b6d18381",
+  MCP_TOOL = "a0a4b1c2-d3e4-4f56-a7b8-c9d0e1f2a3b4",
+  TOOL_ORCHESTRATOR = "3b191d9f-356f-482d-8238-ba04b6d18381",
   OUTPUT = "363ae599-353e-4804-937e-b2ee3cef3da4",
 }
 
@@ -647,121 +780,6 @@ export type Pagination = {
   page_size: number;
 };
 
-export type StoreAgent = {
-  slug: string;
-  agent_name: string;
-  agent_image: string;
-  creator: string;
-  creator_avatar: string;
-  sub_heading: string;
-  description: string;
-  runs: number;
-  rating: number;
-  updated_at: string;
-};
-
-export type StoreAgentsResponse = {
-  agents: StoreAgent[];
-  pagination: Pagination;
-};
-
-export type StoreAgentDetails = {
-  store_listing_version_id: string;
-  slug: string;
-  updated_at: string;
-  agent_name: string;
-  agent_video: string;
-  agent_image: string[];
-  creator: string;
-  creator_avatar: string;
-  sub_heading: string;
-  description: string;
-  categories: string[];
-  runs: number;
-  rating: number;
-  versions: string[];
-
-  // Approval and status fields
-  active_version_id?: string;
-  has_approved_version?: boolean;
-  is_available?: boolean;
-};
-
-export type Creator = {
-  name: string;
-  username: string;
-  description: string;
-  avatar_url: string;
-  num_agents: number;
-  agent_rating: number;
-  agent_runs: number;
-};
-
-export type CreatorsResponse = {
-  creators: Creator[];
-  pagination: Pagination;
-};
-
-export type CreatorDetails = {
-  name: string;
-  username: string;
-  description: string;
-  links: string[];
-  avatar_url: string;
-  agent_rating: number;
-  agent_runs: number;
-  top_categories: string[];
-};
-
-export type StoreSubmission = {
-  agent_id: string;
-  agent_version: number;
-  name: string;
-  sub_heading: string;
-  description: string;
-  image_urls: string[];
-  date_submitted: string;
-  status: SubmissionStatus;
-  runs: number;
-  rating: number;
-  slug: string;
-  store_listing_version_id?: string;
-  version?: number; // Actual version number from the database
-
-  // Review information
-  reviewer_id?: string;
-  review_comments?: string;
-  internal_comments?: string; // Admin-only comments
-  reviewed_at?: string;
-  changes_summary?: string;
-};
-
-export type StoreSubmissionsResponse = {
-  submissions: StoreSubmission[];
-  pagination: Pagination;
-};
-
-export type StoreSubmissionRequest = {
-  agent_id: string;
-  agent_version: number;
-  slug: string;
-  name: string;
-  sub_heading: string;
-  video_url?: string;
-  image_urls: string[];
-  description: string;
-  categories: string[];
-  changes_summary?: string;
-};
-
-export type ProfileDetails = {
-  name: string;
-  username: string;
-  description: string;
-  links: string[];
-  avatar_url: string;
-};
-
 /* Mirror of backend/executor/scheduler.py:GraphExecutionJobInfo */
 export type Schedule = {
   id: ScheduleID;
@@ -773,11 +791,12 @@ export type Schedule = {
   input_data: Record<string, any>;
   input_credentials: Record<string, CredentialsMetaInput>;
   next_run_time: Date;
+  timezone: string;
 };
 
 export type ScheduleID = Brand<string, "ScheduleID">;
 
-/* Mirror of backend/server/routers/v1.py:ScheduleCreationRequest */
+/* Mirror of backend/api/features/v1.py:ScheduleCreationRequest */
 export type ScheduleCreatable = {
   graph_id: GraphID;
   graph_version: number;
@@ -785,31 +804,6 @@ export type ScheduleCreatable = {
   cron: string;
   inputs: Record<string, any>;
   credentials?: Record<string, CredentialsMetaInput>;
-};
-
-export type MyAgent = {
-  agent_id: GraphID;
-  agent_version: number;
-  agent_name: string;
-  agent_image: string | null;
-  last_edited: string;
-  description: string;
-};
-
-export type MyAgentsResponse = {
-  agents: MyAgent[];
-  pagination: Pagination;
-};
-
-export type StoreReview = {
-  score: number;
-  comments?: string;
-};
-
-export type StoreReviewCreate = {
-  store_listing_version_id: string;
-  score: number;
-  comments?: string;
 };
 
 // API Key Types
@@ -833,7 +827,7 @@ export interface APIKey {
   prefix: string;
   postfix: string;
   status: APIKeyStatus;
-  permissions: APIKeyPermission[];
+  scopes: APIKeyPermission[];
   created_at: string;
   last_used_at?: string;
   revoked_at?: string;
@@ -850,7 +844,7 @@ export interface CreditTransaction {
   transaction_time: Date;
   transaction_type: CreditTransactionType;
   amount: number;
-  running_balance: number;
+  running_balance?: number;
   current_balance: number;
   description: string;
   usage_graph_id: GraphID;
@@ -882,6 +876,7 @@ export interface RefundRequest {
 }
 
 export type OnboardingStep =
+  // Introductory onboarding (Library)
   | "WELCOME"
   | "USAGE_REASON"
   | "INTEGRATIONS"
@@ -889,28 +884,69 @@ export type OnboardingStep =
   | "AGENT_NEW_RUN"
   | "AGENT_INPUT"
   | "CONGRATS"
+  // First Wins
+  | "ONBOARDING_COMPLETE"
   | "GET_RESULTS"
-  | "RUN_AGENTS"
-  | "MARKETPLACE_VISIT"
+  | "MARKETPLACE_VISIT" // deprecated: never set
   | "MARKETPLACE_ADD_AGENT"
-  | "MARKETPLACE_RUN_AGENT"
+  | "LIBRARY_RUN_AGENT"
+  | "BUILDER_SAVE_AGENT" // deprecated: never set
+  // Consistency Challenge
+  | "RE_RUN_AGENT" // deprecated: never set
+  | "SCHEDULE_AGENT"
+  | "RUN_AGENTS" // deprecated: never set
+  | "RUN_3_DAYS"
+  // The Pro Playground
+  | "TRIGGER_WEBHOOK"
+  | "RUN_14_DAYS"
+  | "RUN_AGENTS_100"
+  // No longer used but tracked
   | "BUILDER_OPEN"
-  | "BUILDER_SAVE_AGENT"
-  | "BUILDER_RUN_AGENT";
+  | "BUILDER_RUN_AGENT"
+  // Copilot home first-run: capability-cards modal completed or skipped
+  | "CAPABILITY_CARDS"
+  // First-visit intro card for a tab, dismissed however the user chose
+  | "AGENTS_TAB_INTRO"
+  | "MARKETPLACE_TAB_INTRO"
+  | "BUILD_TAB_INTRO";
 
 export interface UserOnboarding {
-  completedSteps: OnboardingStep[];
-  notificationDot: boolean;
+  // Plain string[] so legacy step names from existing rows pass through.
+  // Validation against the active set lives on the completion endpoint via
+  // `PostV1CompleteOnboardingStepStep` (the generated literal union).
+  completedSteps: string[];
+  walletShown: boolean;
+  // Typed enum: `notified` is written back via PATCH /onboarding, which now
+  // validates step names against OnboardingStep at the boundary.
   notified: OnboardingStep[];
-  rewardedFor: OnboardingStep[];
+  rewardedFor: string[];
   usageReason: string | null;
   integrations: string[];
   otherIntegrations: string | null;
   selectedStoreListingVersionId: string | null;
   agentInput: Record<string, string | number> | null;
   onboardingAgentExecutionId: GraphExecutionID | null;
+  lastRunAt: Date | null;
+  consecutiveRunDays: number;
   agentRuns: number;
 }
+
+export interface OnboardingNotificationPayload {
+  type: "onboarding";
+  event: "step_completed" | "increment_runs";
+  // Typed enum: notifications only fire on fresh completions, so `step` is
+  // always a current OnboardingStep (or null for `increment_runs`). Legacy step
+  // names live only in stored rows, never in emitted notifications.
+  step: OnboardingStep | null;
+}
+
+export type WebSocketNotification =
+  | OnboardingNotificationPayload
+  | {
+      type: string;
+      event: string;
+      [key: string]: unknown;
+    };
 
 /* *** UTILITIES *** */
 
@@ -939,46 +975,6 @@ export interface OttoQuery {
   graph_id?: string;
 }
 
-export interface StoreListingWithVersions {
-  listing_id: string;
-  slug: string;
-  agent_id: string;
-  agent_version: number;
-  active_version_id: string | null;
-  has_approved_version: boolean;
-  creator_email: string | null;
-  latest_version: StoreSubmission | null;
-  versions: StoreSubmission[];
-}
-
-export interface StoreListingsWithVersionsResponse {
-  listings: StoreListingWithVersions[];
-  pagination: Pagination;
-}
-
-// Admin API Types
-export type AdminSubmissionsRequest = {
-  status?: SubmissionStatus;
-  search?: string;
-  page: number;
-  page_size: number;
-};
-
-export type AdminListingHistoryRequest = {
-  listing_id: string;
-  page: number;
-  page_size: number;
-};
-
-export type AdminSubmissionDetailsRequest = {
-  store_listing_version_id: string;
-};
-
-export type AdminPendingSubmissionsRequest = {
-  page: number;
-  page_size: number;
-};
-
 export enum CreditTransactionType {
   TOP_UP = "TOP_UP",
   USAGE = "USAGE",
@@ -996,6 +992,7 @@ export type AddUserCreditsResponse = {
   new_balance: number;
   transaction_key: string;
 };
+
 const _stringFormatToDataTypeMap: Partial<Record<string, DataType>> = {
   date: DataType.DATE,
   time: DataType.TIME,
@@ -1027,6 +1024,10 @@ function _handleSingleTypeSchema(subSchema: BlockIOSubSchema): DataType {
     return DataType.NUMBER;
   }
   if (subSchema.type === "array") {
+    // Check for table format first
+    if ("format" in subSchema && subSchema.format === "table") {
+      return DataType.TABLE;
+    }
     /** Commented code below since we haven't yet support rendering of a multi-select with array { items: enum } type */
     // if ("items" in subSchema && subSchema.items && "enum" in subSchema.items) {
     //   return DataType.MULTI_SELECT; // array + enum => multi-select
@@ -1069,6 +1070,13 @@ export function determineDataType(schema: BlockIOSubSchema): DataType {
     return DataType.CREDENTIALS;
   }
 
+  if (
+    "google_drive_picker_config" in schema ||
+    ("format" in schema && schema.format === "google-drive-picker")
+  ) {
+    return DataType.GOOGLE_DRIVE_PICKER;
+  }
+
   // enum == SELECT
   if ("enum" in schema) {
     return DataType.SELECT;
@@ -1106,6 +1114,11 @@ export function determineDataType(schema: BlockIOSubSchema): DataType {
 
     // (array | null)
     if (types.includes("array") && types.includes("null")) {
+      // Check for table format on the parent schema (where anyOf is)
+      if ("format" in schema && schema.format === "table") {
+        return DataType.TABLE;
+      }
+
       const arrSchema = schema.anyOf.find((s) => s.type === "array");
       if (arrSchema) return _handleSingleTypeSchema(arrSchema);
       return DataType.ARRAY;

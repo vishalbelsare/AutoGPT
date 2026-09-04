@@ -1,23 +1,60 @@
-import React from "react";
-import { Metadata } from "next/types";
-import { redirect } from "next/navigation";
-import BackendAPI from "@/lib/autogpt-server-api";
-import { ProfileInfoForm } from "@/components/agptui/ProfileInfoForm";
+"use client";
 
-// Force dynamic rendering to avoid static generation issues with cookies
-export const dynamic = "force-dynamic";
+import { useGetV2GetUserProfile } from "@/app/api/__generated__/endpoints/store/store";
+import { ProfileInfoForm } from "@/components/__legacy__/ProfileInfoForm";
+import { ErrorCard } from "@/components/molecules/ErrorCard/ErrorCard";
+import { isLogoutInProgress } from "@/lib/autogpt-server-api/helpers";
+import type { ProfileDetails } from "@/app/api/__generated__/models/profileDetails";
+import { useAuth } from "@/lib/auth/hooks/useAuth";
+import { ProfileLoading } from "./ProfileLoading";
 
-export const metadata: Metadata = { title: "Profile - AutoGPT Platform" };
+export default function UserProfilePage() {
+  const { user } = useAuth();
+  const logoutInProgress = isLogoutInProgress();
 
-export default async function UserProfilePage(): Promise<React.ReactElement> {
-  const api = new BackendAPI();
-  const profile = await api.getStoreProfile().catch((error) => {
-    console.error("Error fetching profile:", error);
-    return null;
+  const {
+    data: profile,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useGetV2GetUserProfile<ProfileDetails | null>({
+    query: {
+      enabled: !!user && !logoutInProgress,
+      select: (res) => {
+        if (res.status === 200) {
+          return {
+            ...res.data,
+            avatar_url: res.data.avatar_url ?? "",
+          };
+        }
+        return null;
+      },
+    },
   });
 
-  if (!profile) {
-    redirect("/login");
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center px-4">
+        <ErrorCard
+          responseError={
+            error
+              ? {
+                  detail: error.detail,
+                }
+              : undefined
+          }
+          context="profile"
+          onRetry={() => {
+            void refetch();
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (isLoading || !user || !profile) {
+    return <ProfileLoading />;
   }
 
   return (

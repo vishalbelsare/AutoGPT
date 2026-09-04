@@ -4,26 +4,40 @@ Meeting BaaS bot (recording) blocks.
 
 from typing import Optional
 
+from backend.data.model import NodeExecutionStats
 from backend.sdk import (
     APIKeyCredentials,
     Block,
     BlockCategory,
+    BlockCost,
+    BlockCostType,
     BlockOutput,
-    BlockSchema,
+    BlockSchemaInput,
+    BlockSchemaOutput,
     CredentialsMetaInput,
     SchemaField,
+    cost,
 )
 
 from ._api import MeetingBaasAPI
 from ._config import baas
 
+# Meeting BaaS recording rate: $0.69 per hour.
+_MEETING_BAAS_USD_PER_SECOND = 0.69 / 3600
 
+# Join bills a flat 30 cr commit (covers median short meeting);
+# FetchMeetingData bills the duration-scaled remainder from the
+# `duration_seconds` field on the API response. Long meetings no
+# longer under-bill.
+
+
+@cost(BlockCost(cost_type=BlockCostType.RUN, cost_amount=30))
 class BaasBotJoinMeetingBlock(Block):
     """
     Deploy a bot immediately or at a scheduled start_time to join and record a meeting.
     """
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: CredentialsMetaInput = baas.credentials_field(
             description="Meeting BaaS API credentials"
         )
@@ -57,7 +71,7 @@ class BaasBotJoinMeetingBlock(Block):
             description="Custom metadata to attach to the bot", default={}
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         bot_id: str = SchemaField(description="UUID of the deployed bot")
         join_response: dict = SchemaField(
             description="Full response from join operation"
@@ -103,13 +117,13 @@ class BaasBotLeaveMeetingBlock(Block):
     Force the bot to exit the call.
     """
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: CredentialsMetaInput = baas.credentials_field(
             description="Meeting BaaS API credentials"
         )
         bot_id: str = SchemaField(description="UUID of the bot to remove from meeting")
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         left: bool = SchemaField(description="Whether the bot successfully left")
 
     def __init__(self):
@@ -133,12 +147,13 @@ class BaasBotLeaveMeetingBlock(Block):
         yield "left", left
 
 
+@cost(BlockCost(cost_type=BlockCostType.COST_USD, cost_amount=150))
 class BaasBotFetchMeetingDataBlock(Block):
     """
     Pull MP4 URL, transcript & metadata for a completed meeting.
     """
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: CredentialsMetaInput = baas.credentials_field(
             description="Meeting BaaS API credentials"
         )
@@ -147,7 +162,7 @@ class BaasBotFetchMeetingDataBlock(Block):
             description="Include transcript data in response", default=True
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         mp4_url: str = SchemaField(
             description="URL to download the meeting recording (time-limited)"
         )
@@ -175,9 +190,21 @@ class BaasBotFetchMeetingDataBlock(Block):
             include_transcripts=input_data.include_transcripts,
         )
 
+        bot_meta = data.get("bot_data", {}).get("bot", {}) or {}
+        # Bill recording duration via COST_USD so multi-hour meetings
+        # scale past the Join block's flat 30 cr deposit.
+        duration_seconds = float(bot_meta.get("duration_seconds") or 0)
+        if duration_seconds > 0:
+            self.merge_stats(
+                NodeExecutionStats(
+                    provider_cost=duration_seconds * _MEETING_BAAS_USD_PER_SECOND,
+                    provider_cost_type="cost_usd",
+                )
+            )
+
         yield "mp4_url", data.get("mp4", "")
         yield "transcript", data.get("bot_data", {}).get("transcripts", [])
-        yield "metadata", data.get("bot_data", {}).get("bot", {})
+        yield "metadata", bot_meta
 
 
 class BaasBotDeleteRecordingBlock(Block):
@@ -185,13 +212,13 @@ class BaasBotDeleteRecordingBlock(Block):
     Purge MP4 + transcript data for privacy or storage management.
     """
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: CredentialsMetaInput = baas.credentials_field(
             description="Meeting BaaS API credentials"
         )
         bot_id: str = SchemaField(description="UUID of the bot whose data to delete")
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         deleted: bool = SchemaField(
             description="Whether the data was successfully deleted"
         )

@@ -1,11 +1,15 @@
-import { Navbar } from "@/components/layout/Navbar/Navbar";
+import { NetworkStatusMonitor } from "@/services/network-status/NetworkStatusMonitor";
+import { PushNotificationProvider } from "@/services/push-notifications/PushNotificationProvider";
 import { ReactNode } from "react";
+import { AutoPilotBridgeProvider } from "@/contexts/AutoPilotBridgeContext";
+import { PlatformChrome } from "./PlatformChrome/PlatformChrome";
 
 export default function PlatformLayout({ children }: { children: ReactNode }) {
   return (
-    <>
-      <Navbar />
-      <main>{children}</main>
-    </>
+    <AutoPilotBridgeProvider>
+      <NetworkStatusMonitor />
+      <PushNotificationProvider />
+      <PlatformChrome>{children}</PlatformChrome>
+    </AutoPilotBridgeProvider>
   );
 }

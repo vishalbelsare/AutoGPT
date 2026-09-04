@@ -6,8 +6,9 @@ import {
   Collapsible as BaseCollapsible,
   CollapsibleTrigger as BaseCollapsibleTrigger,
   CollapsibleContent as BaseCollapsibleContent,
-} from "@/components/ui/collapsible";
-import { CaretDownIcon } from "@phosphor-icons/react";
+} from "@/components/__legacy__/ui/collapsible";
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+import { Icon } from "@/components/atoms/Icon/Icon";
 
 interface Props {
   trigger: React.ReactNode;
@@ -55,7 +56,8 @@ export function Collapsible({
       >
         <div className="flex-end flex flex-wrap items-center gap-2">
           {trigger}
-          <CaretDownIcon
+          <Icon
+            icon={ArrowDown01Icon}
             className={cn(
               "inline-flex h-4 w-4 transition-transform duration-200",
               openState && "rotate-180",

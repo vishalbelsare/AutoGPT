@@ -1,32 +1,37 @@
-from datetime import datetime, timezone
-
 import pytest
 from prisma.enums import CreditTransactionType
-from prisma.models import CreditTransaction
+from prisma.models import CreditTransaction, UserBalance
 
+from backend.blocks import get_block
 from backend.blocks.llm import AITextGeneratorBlock
-from backend.data.block import get_block
-from backend.data.credit import BetaUserCredit, UsageTransactionMetadata
-from backend.data.execution import NodeExecutionEntry, UserContext
+from backend.data.credit import UsageTransactionMetadata, UserCredit
+from backend.data.execution import ExecutionContext, NodeExecutionEntry
 from backend.data.user import DEFAULT_USER_ID
 from backend.executor.utils import block_usage_cost
 from backend.integrations.credentials_store import openai_credentials
 from backend.util.test import SpinTestServer
 
-REFILL_VALUE = 1000
-user_credit = BetaUserCredit(REFILL_VALUE)
+user_credit = UserCredit()
 
 
 async def disable_test_user_transactions():
     await CreditTransaction.prisma().delete_many(where={"userId": DEFAULT_USER_ID})
+    await UserBalance.prisma().upsert(
+        where={"userId": DEFAULT_USER_ID},
+        data={
+            "create": {"userId": DEFAULT_USER_ID, "balance": 0},
+            "update": {"balance": 0},
+        },
+    )
 
 
 async def top_up(amount: int):
-    await user_credit._add_transaction(
+    balance, _ = await user_credit._add_transaction(
         DEFAULT_USER_ID,
         amount,
         CreditTransactionType.TOP_UP,
     )
+    return balance
 
 
 async def spend_credits(entry: NodeExecutionEntry) -> int:
@@ -63,19 +68,20 @@ async def test_block_credit_usage(server: SpinTestServer):
         NodeExecutionEntry(
             user_id=DEFAULT_USER_ID,
             graph_id="test_graph",
+            graph_version=1,
             node_id="test_node",
             graph_exec_id="test_graph_exec",
             node_exec_id="test_node_exec",
             block_id=AITextGeneratorBlock().id,
             inputs={
-                "model": "gpt-4-turbo",
+                "model": "gpt-4o",
                 "credentials": {
                     "id": openai_credentials.id,
                     "provider": openai_credentials.provider,
                     "type": openai_credentials.type,
                 },
             },
-            user_context=UserContext(timezone="UTC"),
+            execution_context=ExecutionContext(user_timezone="UTC"),
         ),
     )
     assert spending_amount_1 > 0
@@ -84,12 +90,13 @@ async def test_block_credit_usage(server: SpinTestServer):
         NodeExecutionEntry(
             user_id=DEFAULT_USER_ID,
             graph_id="test_graph",
+            graph_version=1,
             node_id="test_node",
             graph_exec_id="test_graph_exec",
             node_exec_id="test_node_exec",
             block_id=AITextGeneratorBlock().id,
-            inputs={"model": "gpt-4-turbo", "api_key": "owned_api_key"},
-            user_context=UserContext(timezone="UTC"),
+            inputs={"model": "gpt-4o", "api_key": "owned_api_key"},
+            execution_context=ExecutionContext(user_timezone="UTC"),
         ),
     )
     assert spending_amount_2 == 0
@@ -107,37 +114,3 @@ async def test_block_credit_top_up(server: SpinTestServer):
 
     new_credit = await user_credit.get_credits(DEFAULT_USER_ID)
     assert new_credit == current_credit + 100
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_block_credit_reset(server: SpinTestServer):
-    await disable_test_user_transactions()
-    month1 = 1
-    month2 = 2
-
-    # set the calendar to month 2 but use current time from now
-    user_credit.time_now = lambda: datetime.now(timezone.utc).replace(
-        month=month2, day=1
-    )
-    month2credit = await user_credit.get_credits(DEFAULT_USER_ID)
-
-    # Month 1 result should only affect month 1
-    user_credit.time_now = lambda: datetime.now(timezone.utc).replace(
-        month=month1, day=1
-    )
-    month1credit = await user_credit.get_credits(DEFAULT_USER_ID)
-    await top_up(100)
-    assert await user_credit.get_credits(DEFAULT_USER_ID) == month1credit + 100
-
-    # Month 2 balance is unaffected
-    user_credit.time_now = lambda: datetime.now(timezone.utc).replace(
-        month=month2, day=1
-    )
-    assert await user_credit.get_credits(DEFAULT_USER_ID) == month2credit
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_credit_refill(server: SpinTestServer):
-    await disable_test_user_transactions()
-    balance = await user_credit.get_credits(DEFAULT_USER_ID)
-    assert balance == REFILL_VALUE

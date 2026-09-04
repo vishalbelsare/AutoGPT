@@ -1,13 +1,7 @@
 "use client";
-import { Button } from "@/components/ui/button";
-import { useRouter } from "next/navigation";
-import { useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { useToast } from "@/components/molecules/Toast/use-toast";
-import { IconKey, IconUser } from "@/components/ui/icons";
-import { Trash2Icon } from "lucide-react";
-import { KeyIcon } from "@phosphor-icons/react/dist/ssr";
-import { providerIcons } from "@/components/integrations/credentials-input";
-import { CredentialsProvidersContext } from "@/components/integrations/credentials-provider";
+
+import { IconKey, IconUser } from "@/components/__legacy__/ui/icons";
+import LoadingBox from "@/components/__legacy__/ui/loading";
 import {
   Table,
   TableBody,
@@ -15,26 +9,29 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
+} from "@/components/__legacy__/ui/table";
+import { Button } from "@/components/atoms/Button/Button";
+import { Dialog } from "@/components/molecules/Dialog/Dialog";
+import { useToast } from "@/components/molecules/Toast/use-toast";
+import { providerIcons } from "@/components/renderers/InputRenderer/custom/CredentialField/helpers";
 import { CredentialsProviderName } from "@/lib/autogpt-server-api";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { useSupabase } from "@/lib/supabase/hooks/useSupabase";
-import LoadingBox from "@/components/ui/loading";
+import { useAuth } from "@/lib/auth/hooks/useAuth";
+import { CredentialsProvidersContext } from "@/providers/agent-credentials/credentials-provider";
+import { Trash2Icon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { Key01Icon } from "@hugeicons/core-free-icons";
+import { Icon } from "@/components/atoms/Icon/Icon";
 
 export default function UserIntegrationsPage() {
-  const { supabase, user, isUserLoading } = useSupabase();
+  const { user, isUserLoading } = useAuth();
   const router = useRouter();
   const providers = useContext(CredentialsProvidersContext);
   const { toast } = useToast();
+
+  useEffect(() => {
+    document.title = "Integrations – AutoGPT Platform";
+  }, []);
 
   const [confirmationDialogState, setConfirmationDialogState] = useState<
     | {
@@ -99,7 +96,6 @@ export default function UserIntegrationsPage() {
   const hiddenCredentials = useMemo(
     () => [
       "744fdc56-071a-4761-b5a5-0af0ce10a2b5", // Ollama
-      "fdb7f412-f519-48d1-9b5f-d2f73d0e01fe", // Revid
       "760f84fc-b270-42de-91f6-08efe1b512d0", // Ideogram
       "6b9fc200-4726-4973-86c9-cd526f5ce5db", // Replicate
       "53c25cb8-e3ee-465c-a4d1-e75a4c899c2a", // OpenAI
@@ -120,14 +116,17 @@ export default function UserIntegrationsPage() {
       "63a6e279-2dc2-448e-bf57-85776f7176dc", // ZeroBounce
       "9aa1bde0-4947-4a70-a20c-84daa3850d52", // Google Maps
       "d44045af-1c33-4833-9e19-752313214de2", // Llama API
+      "c4e6d1a0-3b5f-4789-a8e2-9b123456789f", // V0 by Vercel
+      "a5b3c7d9-2e4f-4a6b-8c1d-9e0f1a2b3c4d", // Webshare Proxy
+      "8b3d4e5f-6a7b-8c9d-0e1f-2a3b4c5d6e7f", // OpenWeatherMap
     ],
     [],
   );
 
   useEffect(() => {
     if (isUserLoading) return;
-    if (!user || !supabase) router.push("/login");
-  }, [isUserLoading, user, supabase, router]);
+    if (!user) router.push("/login");
+  }, [isUserLoading, user, router]);
 
   if (isUserLoading) {
     return <LoadingBox className="h-[80vh]" />;
@@ -141,17 +140,22 @@ export default function UserIntegrationsPage() {
         )
         .flatMap((provider) =>
           provider.savedCredentials
-            .filter((cred) => !hiddenCredentials.includes(cred.id))
+            .filter(
+              (cred) =>
+                !hiddenCredentials.includes(cred.id) &&
+                !cred.id.endsWith("-default"), // Hide SDK-registered default credentials
+            )
             .map((credentials) => ({
               ...credentials,
               provider: provider.provider,
               providerName: provider.providerName,
-              ProviderIcon: providerIcons[provider.provider] || KeyIcon,
+              providerIcon: providerIcons[provider.provider] || Key01Icon,
               TypeIcon: {
                 oauth2: IconUser,
                 api_key: IconKey,
                 user_password: IconKey,
                 host_scoped: IconKey,
+                device_code: IconUser,
               }[credentials.type],
             })),
         )
@@ -173,7 +177,7 @@ export default function UserIntegrationsPage() {
             <TableRow key={cred.id}>
               <TableCell>
                 <div className="flex items-center space-x-1.5">
-                  <cred.ProviderIcon className="h-4 w-4" />
+                  <Icon icon={cred.providerIcon} className="h-4 w-4" />
                   <strong>{cred.providerName}</strong>
                 </div>
               </TableCell>
@@ -189,42 +193,53 @@ export default function UserIntegrationsPage() {
                       api_key: "API key",
                       user_password: "Username & password",
                       host_scoped: "Host-scoped credentials",
+                      device_code: "Device auth credentials",
                     }[cred.type]
                   }{" "}
                   - <code>{cred.id}</code>
                 </small>
               </TableCell>
               <TableCell className="w-0 whitespace-nowrap">
-                <Button
-                  variant="destructive"
-                  onClick={() => removeCredentials(cred.provider, cred.id)}
-                >
-                  <Trash2Icon className="mr-1.5 size-4" /> Delete
-                </Button>
+                {!cred.is_managed && (
+                  <Button
+                    variant="destructive"
+                    onClick={() => removeCredentials(cred.provider, cred.id)}
+                  >
+                    <Trash2Icon className="mr-1.5 size-4" /> Delete
+                  </Button>
+                )}
               </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
 
-      <AlertDialog open={confirmationDialogState.open}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmationDialogState.open && confirmationDialogState.message}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel
+      <Dialog
+        controlled={{
+          isOpen: confirmationDialogState.open,
+          set: (open) => {
+            if (!open) setConfirmationDialogState({ open: false });
+          },
+        }}
+        title="Are you sure?"
+        onClose={() => setConfirmationDialogState({ open: false })}
+        styling={{ maxWidth: "32rem" }}
+      >
+        <Dialog.Content>
+          <p className="text-sm text-zinc-600">
+            {confirmationDialogState.open && confirmationDialogState.message}
+          </p>
+          <Dialog.Footer>
+            <Button
+              variant="secondary"
               onClick={() =>
                 confirmationDialogState.open &&
                 confirmationDialogState.onReject()
               }
             >
               Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
+            </Button>
+            <Button
               variant="destructive"
               onClick={() =>
                 confirmationDialogState.open &&
@@ -232,10 +247,10 @@ export default function UserIntegrationsPage() {
               }
             >
               Continue
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </Button>
+          </Dialog.Footer>
+        </Dialog.Content>
+      </Dialog>
     </div>
   );
 }

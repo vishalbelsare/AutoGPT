@@ -1,11 +1,11 @@
 import { LibraryAgentSort } from "@/app/api/__generated__/models/libraryAgentSort";
-import { useLibraryPageContext } from "../state-provider";
 
-export const useLibrarySortMenu = () => {
-  const { setLibrarySort } = useLibraryPageContext();
+interface Props {
+  setLibrarySort: (value: LibraryAgentSort) => void;
+}
 
+export function useLibrarySortMenu({ setLibrarySort }: Props) {
   const handleSortChange = (value: LibraryAgentSort) => {
-    // Simply updating the sort state - React Query will handle the rest
     setLibrarySort(value);
   };
 
@@ -15,6 +15,8 @@ export const useLibrarySortMenu = () => {
         return "Creation Date";
       case LibraryAgentSort.updatedAt:
         return "Last Modified";
+      case LibraryAgentSort.lastRunAt:
+        return "Last Run";
       default:
         return "Last Modified";
     }
@@ -24,4 +26,4 @@ export const useLibrarySortMenu = () => {
     handleSortChange,
     getSortLabel,
   };
-};
+}

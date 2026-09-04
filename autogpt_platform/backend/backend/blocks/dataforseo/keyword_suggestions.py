@@ -4,11 +4,13 @@ DataForSEO Google Keyword Suggestions block.
 
 from typing import Any, Dict, List, Optional
 
+from backend.data.model import NodeExecutionStats
 from backend.sdk import (
     Block,
     BlockCategory,
     BlockOutput,
-    BlockSchema,
+    BlockSchemaInput,
+    BlockSchemaOutput,
     CredentialsMetaInput,
     SchemaField,
     UserPasswordCredentials,
@@ -18,7 +20,7 @@ from ._api import DataForSeoClient
 from ._config import dataforseo
 
 
-class KeywordSuggestion(BlockSchema):
+class KeywordSuggestion(BlockSchemaInput):
     """Schema for a keyword suggestion result."""
 
     keyword: str = SchemaField(description="The keyword suggestion")
@@ -45,7 +47,7 @@ class KeywordSuggestion(BlockSchema):
 class DataForSeoKeywordSuggestionsBlock(Block):
     """Block for getting keyword suggestions from DataForSEO Labs."""
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: CredentialsMetaInput = dataforseo.credentials_field(
             description="DataForSEO credentials (username and password)"
         )
@@ -77,7 +79,7 @@ class DataForSeoKeywordSuggestionsBlock(Block):
             le=3000,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         suggestions: List[KeywordSuggestion] = SchemaField(
             description="List of keyword suggestions with metrics"
         )
@@ -109,8 +111,10 @@ class DataForSeoKeywordSuggestionsBlock(Block):
             test_output=[
                 (
                     "suggestion",
-                    lambda x: hasattr(x, "keyword")
-                    and x.keyword == "digital marketing strategy",
+                    lambda x: (
+                        hasattr(x, "keyword")
+                        and x.keyword == "digital marketing strategy"
+                    ),
                 ),
                 ("suggestions", lambda x: isinstance(x, list) and len(x) == 1),
                 ("total_count", 1),
@@ -161,54 +165,73 @@ class DataForSeoKeywordSuggestionsBlock(Block):
         **kwargs,
     ) -> BlockOutput:
         """Execute the keyword suggestions query."""
-        client = DataForSeoClient(credentials)
+        try:
+            client = DataForSeoClient(credentials)
 
-        results = await self._fetch_keyword_suggestions(client, input_data)
+            results = await self._fetch_keyword_suggestions(client, input_data)
 
-        # Process and format the results
-        suggestions = []
-        if results and len(results) > 0:
-            # results is a list, get the first element
-            first_result = results[0] if isinstance(results, list) else results
-            items = (
-                first_result.get("items", []) if isinstance(first_result, dict) else []
-            )
-            for item in items:
-                # Create the KeywordSuggestion object
-                suggestion = KeywordSuggestion(
-                    keyword=item.get("keyword", ""),
-                    search_volume=item.get("keyword_info", {}).get("search_volume"),
-                    competition=item.get("keyword_info", {}).get("competition"),
-                    cpc=item.get("keyword_info", {}).get("cpc"),
-                    keyword_difficulty=item.get("keyword_properties", {}).get(
-                        "keyword_difficulty"
-                    ),
-                    serp_info=(
-                        item.get("serp_info") if input_data.include_serp_info else None
-                    ),
-                    clickstream_data=(
-                        item.get("clickstream_keyword_info")
-                        if input_data.include_clickstream_data
-                        else None
-                    ),
+            # DataForSEO reports per-task USD cost on the response. Feed it
+            # into NodeExecutionStats so the COST_USD resolver bills the
+            # real provider spend at reconciliation time.
+            self.merge_stats(
+                NodeExecutionStats(
+                    provider_cost=client.last_cost_usd,
+                    provider_cost_type="cost_usd",
                 )
-                yield "suggestion", suggestion
-                suggestions.append(suggestion)
+            )
 
-        yield "suggestions", suggestions
-        yield "total_count", len(suggestions)
-        yield "seed_keyword", input_data.keyword
+            # Process and format the results
+            suggestions = []
+            if results and len(results) > 0:
+                # results is a list, get the first element
+                first_result = results[0] if isinstance(results, list) else results
+                items = (
+                    first_result.get("items", [])
+                    if isinstance(first_result, dict)
+                    else []
+                )
+                if items is None:
+                    items = []
+                for item in items:
+                    # Create the KeywordSuggestion object
+                    suggestion = KeywordSuggestion(
+                        keyword=item.get("keyword", ""),
+                        search_volume=item.get("keyword_info", {}).get("search_volume"),
+                        competition=item.get("keyword_info", {}).get("competition"),
+                        cpc=item.get("keyword_info", {}).get("cpc"),
+                        keyword_difficulty=item.get("keyword_properties", {}).get(
+                            "keyword_difficulty"
+                        ),
+                        serp_info=(
+                            item.get("serp_info")
+                            if input_data.include_serp_info
+                            else None
+                        ),
+                        clickstream_data=(
+                            item.get("clickstream_keyword_info")
+                            if input_data.include_clickstream_data
+                            else None
+                        ),
+                    )
+                    yield "suggestion", suggestion
+                    suggestions.append(suggestion)
+
+            yield "suggestions", suggestions
+            yield "total_count", len(suggestions)
+            yield "seed_keyword", input_data.keyword
+        except Exception as e:
+            yield "error", f"Failed to fetch keyword suggestions: {str(e)}"
 
 
 class KeywordSuggestionExtractorBlock(Block):
     """Extracts individual fields from a KeywordSuggestion object."""
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         suggestion: KeywordSuggestion = SchemaField(
             description="The keyword suggestion object to extract fields from"
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         keyword: str = SchemaField(description="The keyword suggestion")
         search_volume: Optional[int] = SchemaField(
             description="Monthly search volume", default=None

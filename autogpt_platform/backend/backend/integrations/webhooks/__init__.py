@@ -1,5 +1,6 @@
-import functools
 from typing import TYPE_CHECKING
+
+from backend.util.cache import cached
 
 if TYPE_CHECKING:
     from ..providers import ProviderName
@@ -7,13 +8,15 @@ if TYPE_CHECKING:
 
 
 # --8<-- [start:load_webhook_managers]
-@functools.cache
+@cached(ttl_seconds=3600)
 def load_webhook_managers() -> dict["ProviderName", type["BaseWebhooksManager"]]:
     webhook_managers = {}
 
     from .compass import CompassWebhookManager
     from .github import GithubWebhooksManager
     from .slant3d import Slant3DWebhooksManager
+    from .stripe import StripeWebhooksManager
+    from .telegram import TelegramWebhooksManager
 
     webhook_managers.update(
         {
@@ -22,6 +25,8 @@ def load_webhook_managers() -> dict["ProviderName", type["BaseWebhooksManager"]]
                 CompassWebhookManager,
                 GithubWebhooksManager,
                 Slant3DWebhooksManager,
+                StripeWebhooksManager,
+                TelegramWebhooksManager,
             ]
         }
     )

@@ -5,11 +5,12 @@ import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@/components/ui/popover";
-import { Bell } from "@phosphor-icons/react";
+} from "@/components/__legacy__/ui/popover";
 import { ActivityDropdown } from "./components/ActivityDropdown/ActivityDropdown";
 import { formatNotificationCount } from "./helpers";
 import { useAgentActivityDropdown } from "./useAgentActivityDropdown";
+import { Pulse01Icon } from "@hugeicons/core-free-icons";
+import { Icon } from "@/components/atoms/Icon/Icon";
 
 export function AgentActivityDropdown() {
   const {
@@ -18,14 +19,9 @@ export function AgentActivityDropdown() {
     recentFailures,
     isOpen,
     setIsOpen,
-    isAgentActivityEnabled,
   } = useAgentActivityDropdown();
 
   const activeCount = activeExecutions.length;
-
-  if (!isAgentActivityEnabled) {
-    return null;
-  }
 
   return (
     <Popover open={isOpen} onOpenChange={setIsOpen}>
@@ -35,7 +31,7 @@ export function AgentActivityDropdown() {
           data-testid="agent-activity-button"
           aria-label="View Agent Activity"
         >
-          <Bell size={22} className="text-black" />
+          <Icon icon={Pulse01Icon} size={22} className="text-black" />
 
           {activeCount > 0 && (
             <>
@@ -53,8 +49,7 @@ export function AgentActivityDropdown() {
                 className="absolute bottom-[-2.5rem] left-1/2 z-50 hidden -translate-x-1/2 transform whitespace-nowrap rounded-small bg-white px-4 py-2 shadow-md group-hover:block"
               >
                 <Text variant="body-medium">
-                  {activeCount} running agent
-                  {activeCount > 1 ? "s" : ""}
+                  {activeCount} active agent{activeCount > 1 ? "s" : ""}
                 </Text>
               </div>
             </>

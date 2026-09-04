@@ -39,6 +39,7 @@ class LinearScope(str, Enum):
 
 linear = (
     ProviderBuilder("linear")
+    .with_description("Issues and project tracking")
     .with_api_key(env_var_name="LINEAR_API_KEY", title="Linear API Key")
     .with_base_cost(1, BlockCostType.RUN)
     .with_oauth(
@@ -62,10 +63,10 @@ TEST_CREDENTIALS_OAUTH = OAuth2Credentials(
     title="Mock Linear API key",
     username="mock-linear-username",
     access_token=SecretStr("mock-linear-access-token"),
-    access_token_expires_at=None,
+    access_token_expires_at=1672531200,  # Mock expiration time for short-lived token
     refresh_token=SecretStr("mock-linear-refresh-token"),
     refresh_token_expires_at=None,
-    scopes=["mock-linear-scopes"],
+    scopes=["read", "write"],
 )
 
 TEST_CREDENTIALS_API_KEY = APIKeyCredentials(

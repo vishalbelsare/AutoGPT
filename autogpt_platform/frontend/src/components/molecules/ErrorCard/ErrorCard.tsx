@@ -1,5 +1,5 @@
 import React from "react";
-import { getErrorMessage, getHttpErrorMessage, isHttpError } from "./helpers";
+import { getErrorMessage, getHttpErrorMessage } from "./helpers";
 import { CardWrapper } from "./components/CardWrapper";
 import { ErrorHeader } from "./components/ErrorHeader";
 import { ErrorMessage } from "./components/ErrorMessage";
@@ -7,6 +7,7 @@ import { ActionButtons } from "./components/ActionButtons";
 
 export interface ErrorCardProps {
   isSuccess?: boolean;
+  isOurProblem?: boolean;
   responseError?: {
     detail?: Array<{ msg: string }> | string;
     message?: string;
@@ -17,16 +18,18 @@ export interface ErrorCardProps {
     message?: string;
   };
   context?: string;
-  loadingSlot?: React.ReactNode;
+  hint?: string;
   onRetry?: () => void;
   className?: string;
 }
 
 export function ErrorCard({
   isSuccess = false,
+  isOurProblem = true,
   responseError,
   httpError,
   context = "data",
+  hint,
   onRetry,
   className = "",
 }: ErrorCardProps) {
@@ -34,27 +37,36 @@ export function ErrorCard({
     return null;
   }
 
-  const isHttp = isHttpError(httpError);
+  const hasResponseDetail = !!(
+    responseError &&
+    ((typeof responseError.detail === "string" &&
+      responseError.detail.length > 0) ||
+      (Array.isArray(responseError.detail) &&
+        responseError.detail.length > 0) ||
+      (responseError.message && responseError.message.length > 0))
+  );
 
-  const errorMessage = isHttp
-    ? getHttpErrorMessage(httpError)
-    : getErrorMessage(responseError);
+  const errorMessage = hasResponseDetail
+    ? getErrorMessage(responseError)
+    : getHttpErrorMessage(httpError);
 
   return (
     <CardWrapper className={className}>
       <div className="relative space-y-4 p-6">
         <ErrorHeader />
         <ErrorMessage
-          isHttpError={isHttp}
           errorMessage={errorMessage}
           context={context}
+          hint={hint}
         />
-        <ActionButtons
-          onRetry={onRetry}
-          responseError={responseError}
-          httpError={httpError}
-          context={context}
-        />
+        {isOurProblem && (
+          <ActionButtons
+            onRetry={onRetry}
+            responseError={responseError}
+            httpError={httpError}
+            context={context}
+          />
+        )}
       </div>
     </CardWrapper>
   );

@@ -4,7 +4,8 @@ from backend.sdk import (
     BlockCategory,
     BlockCostType,
     BlockOutput,
-    BlockSchema,
+    BlockSchemaInput,
+    BlockSchemaOutput,
     CredentialsMetaInput,
     ProviderBuilder,
     SchemaField,
@@ -14,6 +15,7 @@ from ._api import llm_api_call
 
 wolfram = (
     ProviderBuilder("wolfram")
+    .with_description("Computational knowledge engine")
     .with_api_key("WOLFRAM_APP_ID", "Wolfram Alpha App ID")
     .with_base_cost(1, BlockCostType.RUN)
     .build()
@@ -25,13 +27,13 @@ class AskWolframBlock(Block):
     Ask Wolfram Alpha a question.
     """
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: CredentialsMetaInput = wolfram.credentials_field(
             description="Wolfram Alpha API credentials"
         )
         question: str = SchemaField(description="The question to ask")
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         answer: str = SchemaField(description="The answer to the question")
 
     def __init__(self):

@@ -1,23 +1,35 @@
 import logging
+from unittest.mock import AsyncMock, patch
 
-import autogpt_libs.auth.models
 import fastapi.responses
+import prisma
 import pytest
 
-import backend.server.v2.library.model
-import backend.server.v2.store.model
+import backend.api.features.library.model
+import backend.api.features.store.model
+from backend.api.model import CreateGraph
+from backend.api.rest_api import AgentServer
 from backend.blocks.basic import StoreValueBlock
 from backend.blocks.data_manipulation import FindInDictionaryBlock
 from backend.blocks.io import AgentInputBlock
 from backend.blocks.maths import CalculatorBlock, Operation
 from backend.data import execution, graph
 from backend.data.model import User
-from backend.server.model import CreateGraph
-from backend.server.rest_api import AgentServer
 from backend.usecases.sample import create_test_graph, create_test_user
 from backend.util.test import SpinTestServer, wait_execution
 
 logger = logging.getLogger(__name__)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def mock_embedding_functions():
+    """Mock embedding functions for all tests to avoid database/API dependencies."""
+    with patch(
+        "backend.api.features.store.db.ensure_embedding",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        yield
 
 
 async def create_graph(s: SpinTestServer, g: graph.Graph, u: User) -> graph.Graph:
@@ -36,21 +48,20 @@ async def execute_graph(
     logger.info(f"Input data: {input_data}")
 
     # --- Test adding new executions --- #
-    response = await agent_server.test_execute_graph(
+    graph_exec = await agent_server.test_execute_graph(
         user_id=test_user.id,
         graph_id=test_graph.id,
         graph_version=test_graph.version,
         node_input=input_data,
     )
-    graph_exec_id = response.graph_exec_id
-    logger.info(f"Created execution with ID: {graph_exec_id}")
+    logger.info(f"Created execution with ID: {graph_exec.id}")
 
     # Execution queue should be empty
     logger.info("Waiting for execution to complete...")
-    result = await wait_execution(test_user.id, graph_exec_id, 30)
+    result = await wait_execution(test_user.id, graph_exec.id, 30)
     logger.info(f"Execution completed with {len(result)} results")
     assert len(result) == num_execs
-    return graph_exec_id
+    return graph_exec.id
 
 
 async def assert_sample_graph_executions(
@@ -358,7 +369,7 @@ async def test_execute_preset(server: SpinTestServer):
     test_graph = await create_graph(server, test_graph, test_user)
 
     # Create preset with initial values
-    preset = backend.server.v2.library.model.LibraryAgentPresetCreatable(
+    preset = backend.api.features.library.model.LibraryAgentPresetCreatable(
         name="Test Preset With Clash",
         description="Test preset with clashing input values",
         graph_id=test_graph.id,
@@ -380,7 +391,7 @@ async def test_execute_preset(server: SpinTestServer):
 
     # Verify execution
     assert result is not None
-    graph_exec_id = result["id"]
+    graph_exec_id = result.id
 
     # Wait for execution to complete
     executions = await wait_execution(test_user.id, graph_exec_id)
@@ -446,7 +457,7 @@ async def test_execute_preset_with_clash(server: SpinTestServer):
     test_graph = await create_graph(server, test_graph, test_user)
 
     # Create preset with initial values
-    preset = backend.server.v2.library.model.LibraryAgentPresetCreatable(
+    preset = backend.api.features.library.model.LibraryAgentPresetCreatable(
         name="Test Preset With Clash",
         description="Test preset with clashing input values",
         graph_id=test_graph.id,
@@ -469,7 +480,7 @@ async def test_execute_preset_with_clash(server: SpinTestServer):
 
     # Verify execution
     assert result is not None, "Result must not be None"
-    graph_exec_id = result["id"]
+    graph_exec_id = result.id
 
     # Wait for execution to complete
     executions = await wait_execution(test_user.id, graph_exec_id)
@@ -487,9 +498,24 @@ async def test_store_listing_graph(server: SpinTestServer):
     test_user = await create_test_user()
     test_graph = await create_graph(server, create_test_graph(), test_user)
 
-    store_submission_request = backend.server.v2.store.model.StoreSubmissionRequest(
-        agent_id=test_graph.id,
-        agent_version=test_graph.version,
+    # Ensure the test user has a Profile (required for store submissions)
+    existing_profile = await prisma.models.Profile.prisma().find_first(
+        where={"userId": test_user.id}
+    )
+    if not existing_profile:
+        await prisma.models.Profile.prisma().create(
+            data=prisma.types.ProfileCreateInput(
+                userId=test_user.id,
+                name=test_user.name or "Test User",
+                username=f"test-user-{test_user.id[:8]}",
+                description="Test user profile",
+                links=[],
+            )
+        )
+
+    store_submission_request = backend.api.features.store.model.StoreSubmissionRequest(
+        graph_id=test_graph.id,
+        graph_version=test_graph.version,
         slug=test_graph.id,
         name="Test name",
         sub_heading="Test sub heading",
@@ -507,8 +533,8 @@ async def test_store_listing_graph(server: SpinTestServer):
         assert False, "Failed to create store listing"
 
     slv_id = (
-        store_listing.store_listing_version_id
-        if store_listing.store_listing_version_id is not None
+        store_listing.listing_version_id
+        if store_listing.listing_version_id is not None
         else None
     )
 
@@ -516,18 +542,21 @@ async def test_store_listing_graph(server: SpinTestServer):
 
     admin_user = await create_test_user(alt_user=True)
     await server.agent_server.test_review_store_listing(
-        backend.server.v2.store.model.ReviewSubmissionRequest(
+        backend.api.features.store.model.ReviewSubmissionRequest(
             store_listing_version_id=slv_id,
             is_approved=True,
             comments="Test comments",
         ),
-        autogpt_libs.auth.models.User(
-            user_id=admin_user.id,
-            role="admin",
-            email=admin_user.email,
-            phone_number="1234567890",
-        ),
+        user_id=admin_user.id,
     )
+
+    # Add the approved store listing to the admin user's library so they can execute it
+    from backend.api.features.library.db import add_store_agent_to_library
+
+    await add_store_agent_to_library(
+        store_listing_version_id=slv_id, user_id=admin_user.id
+    )
+
     alt_test_user = admin_user
 
     data = {"input_1": "Hello", "input_2": "World"}
@@ -541,3 +570,78 @@ async def test_store_listing_graph(server: SpinTestServer):
 
     await assert_sample_graph_executions(test_graph, alt_test_user, graph_exec_id)
     logger.info("Completed test_agent_execution")
+
+
+def _run_completions(status: str) -> float:
+    from prometheus_client import REGISTRY
+
+    return (
+        REGISTRY.get_sample_value(
+            "autogpt_graph_run_completions_total", {"status": status}
+        )
+        or 0.0
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_wrapper_counts_only_an_applied_terminal_transition():
+    """Executor-side wrapper: a row back means the transition applied and is
+    counted once; None back (VALID_STATUS_TRANSITIONS rejected it) is not
+    counted and not broadcast."""
+    from unittest.mock import MagicMock
+
+    from backend.executor.manager import async_update_graph_execution_state
+
+    db = MagicMock()
+    before = _run_completions("COMPLETED")
+
+    with patch(
+        "backend.executor.manager.send_async_execution_update",
+        new_callable=AsyncMock,
+    ) as send:
+        db.update_graph_execution_stats = AsyncMock(return_value=MagicMock())
+        await async_update_graph_execution_state(
+            db, "ge-1", status=execution.ExecutionStatus.COMPLETED
+        )
+        assert _run_completions("COMPLETED") == before + 1
+        send.assert_awaited_once()
+
+        send.reset_mock()
+        db.update_graph_execution_stats = AsyncMock(return_value=None)
+        await async_update_graph_execution_state(
+            db, "ge-1", status=execution.ExecutionStatus.COMPLETED
+        )
+        assert _run_completions("COMPLETED") == before + 1
+        send.assert_not_awaited()
+
+
+def test_sync_wrapper_counts_only_an_applied_terminal_transition():
+    from unittest.mock import MagicMock
+
+    from backend.executor.manager import update_graph_execution_state
+
+    db = MagicMock()
+    before = _run_completions("FAILED")
+
+    with patch("backend.executor.manager.send_execution_update") as send:
+        db.update_graph_execution_stats = MagicMock(return_value=MagicMock())
+        update_graph_execution_state(
+            db, "ge-1", status=execution.ExecutionStatus.FAILED
+        )
+        assert _run_completions("FAILED") == before + 1
+        send.assert_called_once()
+
+        send.reset_mock()
+        db.update_graph_execution_stats = MagicMock(return_value=None)
+        update_graph_execution_state(
+            db, "ge-1", status=execution.ExecutionStatus.FAILED
+        )
+        assert _run_completions("FAILED") == before + 1
+        send.assert_not_called()
+
+        # Non-terminal transitions are never counted, applied or not.
+        db.update_graph_execution_stats = MagicMock(return_value=MagicMock())
+        update_graph_execution_state(
+            db, "ge-1", status=execution.ExecutionStatus.RUNNING
+        )
+        assert _run_completions("FAILED") == before + 1

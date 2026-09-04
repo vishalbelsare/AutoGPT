@@ -5,6 +5,7 @@ from backend.data import graph
 from backend.data.graph import create_graph
 from backend.data.model import User
 from backend.data.user import get_or_create_user
+from backend.util.exceptions import DatabaseError
 from backend.util.test import SpinTestServer, wait_execution
 
 
@@ -21,8 +22,13 @@ async def create_test_user(alt_user: bool = False) -> User:
             "email": "testuser@example.com",
             "name": "Test User",
         }
-    user = await get_or_create_user(test_user_data)
-    return user
+    try:
+        return await get_or_create_user(test_user_data)
+    except DatabaseError as error:
+        if "Event loop is closed" not in str(error):
+            raise
+
+    return await get_or_create_user(test_user_data)
 
 
 def create_test_graph() -> graph.Graph:
@@ -88,12 +94,12 @@ async def sample_agent():
         test_user = await create_test_user()
         test_graph = await create_graph(create_test_graph(), test_user.id)
         input_data = {"input_1": "Hello", "input_2": "World"}
-        response = await server.agent_server.test_execute_graph(
+        graph_exec = await server.agent_server.test_execute_graph(
             graph_id=test_graph.id,
             user_id=test_user.id,
             node_input=input_data,
         )
-        await wait_execution(test_user.id, response.graph_exec_id, 10)
+        await wait_execution(test_user.id, graph_exec.id, 10)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,16 @@ import asyncio
 import io
 import logging
 import time
+import warnings
 from typing import Optional, Tuple
 
-import aioclamd
+# Suppress the specific pkg_resources deprecation warning from aioclamd
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore", message="pkg_resources is deprecated", category=UserWarning
+    )
+    import aioclamd
+
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
@@ -101,6 +108,9 @@ class VirusScannerService:
             return VirusScanResult(
                 is_clean=True, scan_time_ms=0, file_size=len(content)
             )
+        if len(content) == 0:
+            logger.debug(f"Skipping virus scan for empty file {filename}")
+            return VirusScanResult(is_clean=True, scan_time_ms=0, file_size=0)
         if len(content) > self.settings.max_scan_size:
             logger.warning(
                 f"File {filename} ({len(content)} bytes) exceeds client max scan size ({self.settings.max_scan_size}); Stopping virus scan"
@@ -116,7 +126,7 @@ class VirusScannerService:
             raise RuntimeError("ClamAV service is unreachable")
 
         start = time.monotonic()
-        chunk_size = len(content)  # Start with full content length
+        chunk_size = max(1, len(content))  # Start with full content length
         for retry in range(self.settings.max_retries):
             # For small files, don't check min_chunk_size limit
             if chunk_size < self.settings.min_chunk_size and chunk_size < len(content):
@@ -189,7 +199,7 @@ async def scan_content_safe(content: bytes, *, filename: str = "unknown") -> Non
         VirusDetectedError: If virus is found
         VirusScanError: If scanning fails
     """
-    from backend.server.v2.store.exceptions import VirusDetectedError, VirusScanError
+    from backend.api.features.store.exceptions import VirusDetectedError, VirusScanError
 
     try:
         result = await get_virus_scanner().scan_file(content, filename=filename)
@@ -205,5 +215,5 @@ async def scan_content_safe(content: bytes, *, filename: str = "unknown") -> Non
     except VirusDetectedError:
         raise
     except Exception as e:
-        logger.error(f"Virus scanning failed for {filename}: {str(e)}")
+        logger.warning(f"Virus scanning failed for {filename}: {str(e)}")
         raise VirusScanError(f"Virus scanning failed: {str(e)}") from e

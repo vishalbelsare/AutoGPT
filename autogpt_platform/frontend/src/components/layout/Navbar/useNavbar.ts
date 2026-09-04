@@ -1,10 +1,10 @@
 import { useGetV2GetUserProfile } from "@/app/api/__generated__/endpoints/store/store";
-import { useSupabase } from "@/lib/supabase/hooks/useSupabase";
+import { isLogoutInProgress } from "@/lib/autogpt-server-api/helpers";
+import { useAuth } from "@/lib/auth/hooks/useAuth";
 
 export function useNavbar() {
-  const { isLoggedIn, isUserLoading } = useSupabase();
-
-  console.log("isLoggedIn", isLoggedIn);
+  const { isLoggedIn, isUserLoading } = useAuth();
+  const logoutInProgress = isLogoutInProgress();
 
   const {
     data: profileResponse,
@@ -12,7 +12,7 @@ export function useNavbar() {
     error: profileError,
   } = useGetV2GetUserProfile({
     query: {
-      enabled: isLoggedIn === true,
+      enabled: isLoggedIn === true && !logoutInProgress,
     },
   });
 
